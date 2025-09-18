@@ -1,0 +1,48 @@
+# -----------------------
+# Terraform
+# -----------------------
+
+# Local .terraform directories
+**/.terraform/*
+
+# Terraform state files
+**/*.tfstate
+**/*.tfstate.*
+
+# Crash logs
+crash.log
+
+# Terraform plan files
+*.plan
+
+# Sensitive variable files
+terraform.tfvars
+*.tfvars
+
+# -----------------------
+# AWS CLI / Tools
+# -----------------------
+
+# AWS CLI installer archive
+awscliv2.zip
+
+# -----------------------
+# IDE / Editor settings
+# -----------------------
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# IntelliJ / JetBrains
+.idea/
+
+# Swap / temp files
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
