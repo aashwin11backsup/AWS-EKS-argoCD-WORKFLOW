@@ -1,0 +1,109 @@
+name: 'Deploy Apps to EKS'
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: 'AWS Region (e.g., us-east-1)'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name (e.g., staging-eks-demo)'
+        required: true
+        default: 'staging-eks-demo'
+
+jobs:
+  deploy-to-eks:
+    name: 'Deploy ALB Controller and ArgoCD'
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.aws_region }}
+
+      # 1. Connect to the EKS Cluster
+      - name: Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
+          echo "Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
+
+      # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
+      - name: Ensure IAM Policy for ALB Controller
+        run: |
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          POLICY_ARN="arn:aws:iam::aws:policy/$POLICY_NAME"
+
+          echo "Checking if IAM policy exists..."
+          if aws iam get-policy --policy-arn $POLICY_ARN >/dev/null 2>&1; then
+            echo "Policy $POLICY_NAME exists."
+          else
+            echo "Policy $POLICY_NAME not found. Creating custom policy..."
+            curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json
+          fi
+
+          NODE_ROLE=$(aws eks describe-nodegroup \
+            --cluster-name ${{ github.event.inputs.cluster_name }} \
+            --nodegroup-name ${{ github.event.inputs.cluster_name }}-node-group \
+            --query "nodegroup.nodeRole" --output text)
+
+          echo "Attaching IAM policy to node role: $NODE_ROLE"
+          aws iam attach-role-policy --role-name $(basename $NODE_ROLE) --policy-arn $POLICY_ARN || true
+
+      # 3. Install AWS Load Balancer Controller
+      - name: Install AWS Load Balancer Controller
+        run: |
+          VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "Found VPC ID: $VPC_ID"
+
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set serviceAccount.create=true \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set vpcId=$VPC_ID
+            --set region=${{ env.AWS_REGION }}
+
+      # 4. Install ArgoCD with --insecure flag
+      - name: Install ArgoCD
+        run: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+          
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace argocd \
+            --create-namespace \
+            --set server.service.type=ClusterIP \
+            --set server.extraArgs={--insecure}
+
+      # 5. Expose ArgoCD Server via Ingress
+      - name: Expose ArgoCD Server
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+          kubectl apply -f kubernetes-manifests/argocd-ingress.yml
+
+      # 6. Get the ALB DNS Name
+      - name: Get ArgoCD Ingress URL
+        run: |
+          echo "Waiting for Ingress to get an address..."
+          sleep 30
+          kubectl get ingress argocd-server-ingress -n argocd -o wide
+          echo "=========================================================================="
+          echo "Your ArgoCD URL will be available in a few minutes at:"
+          kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo ""
+          echo "=========================================================================="
