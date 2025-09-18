@@ -58,9 +58,22 @@ jobs:
             echo "Created policy: $POLICY_ARN"
           fi
 
+          # Dynamically fetch node group name
+          NODE_GROUP_NAME=$(aws eks list-nodegroups \
+            --cluster-name ${{ github.event.inputs.cluster_name }} \
+            --query "nodegroups[0]" \
+            --output text)
+
+          if [ -z "$NODE_GROUP_NAME" ]; then
+            echo "❌ No node groups found in cluster ${{ github.event.inputs.cluster_name }}"
+            exit 1
+          fi
+
+          echo "Found node group: $NODE_GROUP_NAME"
+
           NODE_ROLE=$(aws eks describe-nodegroup \
             --cluster-name ${{ github.event.inputs.cluster_name }} \
-            --nodegroup-name ${{ github.event.inputs.cluster_name }}-node-group \
+            --nodegroup-name "$NODE_GROUP_NAME" \
             --query "nodegroup.nodeRole" --output text)
 
           echo "Attaching IAM policy to node role: $NODE_ROLE"
