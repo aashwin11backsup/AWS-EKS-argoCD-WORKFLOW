@@ -1,4 +1,4 @@
-name: 'Terraform EKS Manual Deploy'
+name: '1-Terraform EKS Manual Deploy'
 
 on:
   workflow_dispatch:

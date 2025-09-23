@@ -1,4 +1,4 @@
-name: 'Destroy Apps from EKS'
+name: '3-Destroy Apps from EKS'
 
 on:
   workflow_dispatch:
