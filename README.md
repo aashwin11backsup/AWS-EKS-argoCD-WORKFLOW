@@ -29,6 +29,7 @@ To get started, you need to configure repository secrets to allow GitHub Actions
     * Add the following two secrets using credentials from a dedicated IAM user:
         * `AWS_ACCESS_KEY_ID`
         * `AWS_SECRET_ACCESS_KEY`
+3. **Make sure you have created an S3 and DynamoDB Table and noted down there Bucket Name and DD Table Name**
 
 
 
