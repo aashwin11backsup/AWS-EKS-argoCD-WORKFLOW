@@ -19,10 +19,25 @@ on:
         description: 'Unique Project Name (e.g., staging-eks-demo)'
         required: true
         default: 'staging-eks-demo'
+      instance_types:
+        description: 'Select the instance (e.g: t2.medium)'
+        required: true
+        default: 't3.medium'
+
       cluster_version:
         description: 'EKS Kubernetes Version (e.g., 1.28)'
         required: true
         default: '1.28'
+
+# THis for backend.tf file variable input 
+      tf_state_bucket:
+        description: 'S3 bucket for Terraform state file'
+        required: true
+        default: 'staging-eks-demo-tfstate-t1'
+      tf_lock_table:
+        description: 'DynamoDB table for Terraform state locking'
+        required: true
+        default: 'staging-eks-demo-tf-lock'
 
 jobs:
   terraform:
@@ -52,8 +67,12 @@ jobs:
 
       - name: Terraform Init
         id: init
-        run: terraform init -input=false
-        working-directory: ./terraform-project 
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ github.event.inputs.tf_state_bucket }}" \
+            -backend-config="key=staging/${{ github.event.inputs.project_name }}/terraform.tfstate" \
+            -backend-config="region=${{ github.event.inputs.aws_region }}" \
+            -backend-config="dynamodb_table=${{ github.event.inputs.tf_lock_table }}"
 
       - name: Terraform Validate
         id: validate
@@ -67,6 +86,7 @@ jobs:
           terraform plan -input=false -out=tfplan \
             -var="aws_region=${{ github.event.inputs.aws_region }}" \
             -var="project_name=${{ github.event.inputs.project_name }}" \
+            -var="instance_types=${{ github.event.inputs.instance_types }}" \
             -var="cluster_version=${{ github.event.inputs.cluster_version }}"
 
           terraform apply -auto-approve -input=false tfplan
@@ -79,5 +99,6 @@ jobs:
           terraform apply -destroy -auto-approve -input=false \
             -var="aws_region=${{ github.event.inputs.aws_region }}" \
             -var="project_name=${{ github.event.inputs.project_name }}" \
+            -var="instance_types=${{ github.event.inputs.instance_types }}" \
             -var="cluster_version=${{ github.event.inputs.cluster_version }}"
         working-directory: ./terraform-project 

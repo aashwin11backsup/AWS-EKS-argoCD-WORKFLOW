@@ -29,6 +29,7 @@ module "eks" {
   project_name         = var.project_name
   cluster_version      = var.cluster_version
   private_subnet_ids   = module.vpc.private_subnet_ids
+  instance_types= var.instance_types
   
   # Node group scaling
   desired_size         = 2
