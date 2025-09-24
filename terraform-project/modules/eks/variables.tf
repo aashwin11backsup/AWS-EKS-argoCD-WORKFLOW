@@ -17,7 +17,7 @@ variable "private_subnet_ids" {
 variable "instance_types" {
   description = "List of EC2 instance types for the node group"
   type        = string
-  default     = ["t3.medium"]
+  default     = "t3.medium"
 }
 
 variable "desired_size" {

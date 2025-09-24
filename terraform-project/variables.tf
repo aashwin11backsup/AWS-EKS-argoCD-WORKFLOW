@@ -12,8 +12,8 @@ variable "project_name" {
 
 variable "instance_types" {
   description = "List of EC2 instance types for the node group"
-  type        = list(string)
-  default     = ["t3.medium"]
+  type        =  string
+  default     = "t3.medium"
 }
 variable "cluster_version" {
   description = "Kubernetes version for EKS"
