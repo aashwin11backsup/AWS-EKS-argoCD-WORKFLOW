@@ -12,3 +12,9 @@ output "cluster_ca_certificate" {
   description = "The CA certificate for the EKS cluster"
   value       = aws_eks_cluster.main.certificate_authority[0].data
 }
+
+
+output "node_role_arn" {
+  description = "The ARN of the IAM role for the worker nodes."
+  value       = aws_iam_role.node_role.arn
+}

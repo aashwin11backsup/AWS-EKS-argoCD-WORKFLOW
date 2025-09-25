@@ -38,50 +38,43 @@ module "eks" {
 }
 
 
-
-
 # ------------------------------------------------------------------
 # --- EKS AUTHENTICATION - Grant access to the cluster creator ---
 # ------------------------------------------------------------------
 
-# STEP 1: READ the existing aws-auth ConfigMap. This block was missing.
-data "kubernetes_config_map_v1" "aws_auth" {
+# This single resource creates and manages the entire aws-auth ConfigMap.
+# This avoids the race condition of trying to patch a file that doesn't exist yet.
+resource "kubernetes_config_map_v1" "aws_auth" {
   metadata {
     name      = "aws-auth"
     namespace = "kube-system"
   }
-  # Ensures we wait for the cluster to be ready before trying to read the map
-  depends_on = [module.eks]
-}
-
-# STEP 2: MODIFY the data in the ConfigMap.
-resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
-  metadata {
-    name      = "aws-auth"
-    namespace = "kube-system"
-  }
-
-  # This allows Terraform to manage this specific field without conflicts
-  field_manager = "terraform-provider-kubernetes"
-  force         = true # Takes ownership of the data field
 
   data = {
-    "mapUsers" = yamlencode(
-      # setunion combines the lists and removes any duplicates.
-      setunion(
-        # Use try() to provide a default empty list if the ConfigMap isn't ready.
-        try(yamldecode(data.kubernetes_config_map_v1.aws_auth.data.mapUsers), []),
-        [
-          {
-            # ARN is passed dynamically from the workflow
-            userarn  = var.cluster_creator_arn
-            # Extracts the username (e.g., "ItAdmin") from the full ARN
-            username = split("/", var.cluster_creator_arn)[1]
-            # Grants full cluster-admin permissions
-            groups   = ["system:masters"]
-          }
+    # This section maps the EC2 worker node's IAM role to Kubernetes,
+    # allowing the nodes to join the cluster.
+    "mapRoles" = yamlencode([
+      {
+        rolearn  = module.eks.node_role_arn
+        username = "system:node:{{EC2PrivateDNSName}}"
+        groups = [
+          "system:bootstrappers",
+          "system:nodes",
         ]
-      )
-    )
+      },
+    ])
+
+    # This section maps the IAM user from your workflow to a Kubernetes
+    # admin user, giving you access.
+    "mapUsers" = yamlencode([
+      {
+        userarn  = var.cluster_creator_arn
+        username = split("/", var.cluster_creator_arn)[1]
+        groups   = ["system:masters"]
+      },
+    ])
   }
+
+  # Ensures this resource is created only after the EKS cluster and node group exist.
+  depends_on = [module.eks]
 }
