@@ -37,7 +37,24 @@ module "eks" {
   min_size           = 1
 }
 
-# This resource SAFELY MODIFIES the aws-auth ConfigMap data.
+
+
+
+# ------------------------------------------------------------------
+# --- EKS AUTHENTICATION - Grant access to the cluster creator ---
+# ------------------------------------------------------------------
+
+# STEP 1: READ the existing aws-auth ConfigMap. This block was missing.
+data "kubernetes_config_map_v1" "aws_auth" {
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+  # Ensures we wait for the cluster to be ready before trying to read the map
+  depends_on = [module.eks]
+}
+
+# STEP 2: MODIFY the data in the ConfigMap.
 resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
   metadata {
     name      = "aws-auth"
@@ -52,8 +69,7 @@ resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
     "mapUsers" = yamlencode(
       # setunion combines the lists and removes any duplicates.
       setunion(
-        # CORRECT: Use try() to provide a default empty list if the ConfigMap isn't ready.
-        # This prevents errors during the initial cluster creation.
+        # Use try() to provide a default empty list if the ConfigMap isn't ready.
         try(yamldecode(data.kubernetes_config_map_v1.aws_auth.data.mapUsers), []),
         [
           {
