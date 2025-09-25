@@ -39,7 +39,21 @@ module "eks" {
 
 
 #---------- Change after the LOCAL Access Issue ----------------
+#ISSUE : When bootstraping the IAM User in the EKS Cluster, ITS IDENTITY IS CREATED INSIDE THE CLUSTER [with master acces]
+# For GitHub IAM User --> Since Bootstraped, this User has both Authentication and authorization
+                          # It can talk the EKs API and has RBAC permissions in K8
 
+# For the Local IAM User --> EKs allows authentication via the IAM [Hence, we did not get issue while updating kubeconfig]
+                            # Till here aws knew that we are the same IAM user, AUTHENTICATEd
+                            # PROBLEM IS HERE : This user is not mapped in the aws auth configMap 
+                            
+                            
+# Means,Bootstraping[concept tried earlier] --> AUTOMATICALLY GIVES THE CLUSTER CREATOR IAM ENTITY RBAC RIGHTs
+        # Therefore the IAM User [whoever created the Cluster] was never added to the aws-auth ConfigMap
+        # So authentication was passing from the AWS side
+        # Authorization was failing from the RBAC side because IAM user was never added to the aws-auth ConfigMap
+
+#---------------------------------------------------------------------------------------------------------------------------------------------
 # SECTION : To add the IAM User to the aws-auth ConfigMap, 
 # --------------------> granting it admin privileges.
 
