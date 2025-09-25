@@ -40,7 +40,10 @@ module "eks" {
 
 #---------- Change after the LOCAL Access Issue ----------------
 
-# Adding the IAM User through authmap config to ensure that it exists.
+# SECTION : To add the IAM User to the aws-auth ConfigMap, 
+# --------------------> granting it admin privileges.
+
+#  Using here "kubernetes_config_map_v1" to ensure that it safely merges the changes without overwriting the entire ConfigMap
 resource "kubernetes_config_map_v1" "aws_auth" {
   metadata {
     name      = "aws-auth"
@@ -48,7 +51,10 @@ resource "kubernetes_config_map_v1" "aws_auth" {
   }
 
   data = {
-   
+  # creates a mapping in the aws-auth ConfigMap that tells Kubernetes 
+  #how to handle requests from the EC2 Ins (worker nodes)
+
+ 
     "mapRoles" = yamlencode([
       {
         rolearn  = module.eks.node_role_arn
@@ -63,7 +69,7 @@ resource "kubernetes_config_map_v1" "aws_auth" {
     # admin user, giving  access to the IAM user.
     "mapUsers" = yamlencode([
       {
-        # Taking the IAM User ARN on the flow and splitting the username from it after "/"
+        # MAIN LOGIC: Taking the IAM User ARN on the flow and splitting the username from it after "/"
         userarn  = var.cluster_creator_arn
         username = split("/", var.cluster_creator_arn)[1]
         groups   = ["system:masters"]
@@ -71,5 +77,7 @@ resource "kubernetes_config_map_v1" "aws_auth" {
     ])
   }
 
+
+# Making sure that the eks cluster is created
   depends_on = [module.eks]
 }

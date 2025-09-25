@@ -79,12 +79,12 @@ jobs:
       - name: Create tfvars.json file
         id: create_tfvars
         run: |
-          # Get the ARN of the IAM user running the workflow
+          # ARN of the IAM user running the workflow : DYNAMICALLY FILLED
           CREATOR_ARN=$(aws sts get-caller-identity --query Arn --output text)
           echo "Workflow is running with ARN: $CREATOR_ARN"
           
-          # Create a JSON file with variables for Terraform
-          # This includes the dynamically fetched creator ARN
+          # tfvars JSON file 
+          # 
           cat <<EOF > my-vars.tfvars.json
           {
             "aws_region": "${{ github.event.inputs.aws_region }}",
@@ -95,7 +95,7 @@ jobs:
           }
           EOF
           
-          # This command will print the file contents to the log for verification
+          # DUMMY ECHO of tfvars
           echo "--- Verifying my-vars.tfvars.json content ---"
           cat my-vars.tfvars.json
           echo "---------------------------------------------"
