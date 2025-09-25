@@ -46,7 +46,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        # Set the working directory for all run steps in this job
+        # --->CHANGE THE DIRECTORY VARIABLE IF THE TERRAFORM DIRECTORY IS CHANGE
         working-directory: ./terraform-project 
 
     steps:
