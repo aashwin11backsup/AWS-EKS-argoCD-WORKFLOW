@@ -37,20 +37,6 @@ module "eks" {
   min_size           = 1
 }
 
-# ------------------------------------------------------------------
-# --- EKS AUTHENTICATION - Grant access to the cluster creator ---
-# ------------------------------------------------------------------
-
-# Data source to retrieve the default aws-auth config from the cluster.
-data "kubernetes_config_map_v1" "aws_auth" {
-  metadata {
-    name      = "aws-auth"
-    namespace = "kube-system"
-  }
-  # Ensures we wait for the cluster to be ready before trying to read the map
-  depends_on = [module.eks]
-}
-
 # This resource SAFELY MODIFIES the aws-auth ConfigMap data.
 resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
   metadata {
@@ -64,10 +50,11 @@ resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
 
   data = {
     "mapUsers" = yamlencode(
-      # Merge the existing users from the data source with your new user
+      # setunion combines the lists and removes any duplicates.
       setunion(
-        # The existing users are now read correctly from the new data source
-        yamldecode(data.kubernetes_config_map_v1.aws_auth.data.mapUsers),
+        # CORRECT: Use try() to provide a default empty list if the ConfigMap isn't ready.
+        # This prevents errors during the initial cluster creation.
+        try(yamldecode(data.kubernetes_config_map_v1.aws_auth.data.mapUsers), []),
         [
           {
             # ARN is passed dynamically from the workflow
