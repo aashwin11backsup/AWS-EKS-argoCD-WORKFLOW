@@ -1,3 +1,5 @@
+# This is your complete, updated workflow file.
+
 name: '1-Terraform EKS Manual Deploy-APPLY/DESTROY'
 
 on:
@@ -23,13 +25,11 @@ on:
         description: 'Select the instance (e.g: t2.medium)'
         required: true
         default: 't3.medium'
-
       cluster_version:
         description: 'EKS Kubernetes Version (e.g., 1.28)'
         required: true
         default: '1.28'
-
-# THis for backend.tf file variable input 
+      # This for backend.tf file variable input 
       tf_state_bucket:
         description: 'S3 bucket for Terraform state file'
         required: true
@@ -47,6 +47,8 @@ jobs:
     defaults:
       run:
         shell: bash
+        # Set the working directory for all run steps in this job
+        working-directory: ./terraform-project 
 
     steps:
       - name: Checkout Code
@@ -63,46 +65,58 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.0
-          terraform_wrapper: false # As requested, disable the wrapper
 
       - name: Terraform Init
         id: init
         run: |
+          # Initializes Terraform with backend configuration from workflow inputs
           terraform init \
             -backend-config="bucket=${{ github.event.inputs.tf_state_bucket }}" \
             -backend-config="key=staging/${{ github.event.inputs.project_name }}/terraform.tfstate" \
             -backend-config="region=${{ github.event.inputs.aws_region }}" \
             -backend-config="dynamodb_table=${{ github.event.inputs.tf_lock_table }}"
-        working-directory: ./terraform-project 
 
       - name: Create tfvars.json file
+        id: create_tfvars
         run: |
-          echo '{' > my-vars.tfvars.json
-          echo '  "aws_region": "${{ github.event.inputs.aws_region }}",' >> my-vars.tfvars.json
-          echo '  "project_name": "${{ github.event.inputs.project_name }}",' >> my-vars.tfvars.json
-          echo '  "cluster_version": "${{ github.event.inputs.cluster_version }}",' >> my-vars.tfvars.json
-          echo '  "instance_types": ["${{ github.event.inputs.instance_types }}"]' >> my-vars.tfvars.json
-          echo '}' >> my-vars.tfvars.json
-        working-directory: ./terraform-project 
+          # Get the ARN of the IAM user running the workflow
+          CREATOR_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          echo "Workflow is running with ARN: $CREATOR_ARN"
+          
+          # Create a JSON file with variables for Terraform
+          # This includes the dynamically fetched creator ARN
+          cat <<EOF > my-vars.tfvars.json
+          {
+            "aws_region": "${{ github.event.inputs.aws_region }}",
+            "project_name": "${{ github.event.inputs.project_name }}",
+            "cluster_version": "${{ github.event.inputs.cluster_version }}",
+            "instance_types": ["${{ github.event.inputs.instance_types }}"],
+            "cluster_creator_arn": "$CREATOR_ARN"
+          }
+          EOF
+          
+          # This command will print the file contents to the log for verification
+          echo "--- Verifying my-vars.tfvars.json content ---"
+          cat my-vars.tfvars.json
+          echo "---------------------------------------------"
 
       - name: Terraform Validate
         id: validate
-        run: terraform validate
-        working-directory: ./terraform-project 
+        run: terraform validate -no-color
 
       # --- APPLY LOGIC ---
       - name: Terraform Plan and Apply
         if: github.event.inputs.action == 'apply'
         run: |
+          # Generate a plan using the tfvars file
           terraform plan -input=false -out=tfplan -var-file="my-vars.tfvars.json"
 
+          # Apply the plan to create or update infrastructure
           terraform apply -auto-approve -input=false tfplan
-        working-directory: ./terraform-project 
         
       # --- DESTROY LOGIC ---
       - name: Terraform Destroy
         if: github.event.inputs.action == 'destroy'
         run: |
+          # Destroy the infrastructure using variables from the tfvars file
           terraform destroy -auto-approve -input=false -var-file="my-vars.tfvars.json"
-
-        working-directory: ./terraform-project 
