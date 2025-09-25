@@ -41,39 +41,87 @@ module "eks" {
 
 #----------- Changing the Code after [LOCAL CONNECTION TO THE CLUSTER]--------------------
 
-# Data source to retrieve the default aws-auth config from the cluster.
+# --- Data sources to get available AZs in the chosen region ---
+data "aws_availability_zones" "available" {
+  state = "available"
+}
 
-data "aws_eks_cluster_auth" "main" {
-  name = module.eks.cluster_name
+# --- Local variables for networking configuration ---
+locals {
+  vpc_cidr             = "10.0.0.0/16"
+  public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+  private_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24"]
+  availability_zones   = slice(data.aws_availability_zones.available.names, 0, 2)
+}
+
+# --- Networking Module ---
+module "vpc" {
+  source = "./modules/vpc"
+
+  project_name         = var.project_name
+  vpc_cidr             = local.vpc_cidr
+  public_subnet_cidrs  = local.public_subnet_cidrs
+  private_subnet_cidrs = local.private_subnet_cidrs
+  availability_zones   = local.availability_zones
+}
+
+# --- EKS Cluster Module ---
+module "eks" {
+  source = "./modules/eks"
+
+  project_name         = var.project_name
+  cluster_version      = var.cluster_version
+  private_subnet_ids   = module.vpc.private_subnet_ids
+  instance_types=      var.instance_types
+  
+  # Node group scaling
+  desired_size         = 2
+  max_size             = 3
+  min_size             = 1
 }
 
 
-resource "kubernetes_config_map_v1_data" "aws_auth" {
-  # This depends on the Kubernetes provider configured in providers.tf
+
+#----------- Changing the Code after [LOCAL CONNECTION TO THE CLUSTER]--------------------
+
+# Data source to retrieve the default aws-auth config from the cluster.
+data "kubernetes_config_map_v1" "aws_auth" {
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+  # Ensures we wait for the cluster to be ready before trying to read the map
+  depends_on = [module.eks]
+}
+
+# This resource SAFELY MODIFIES the aws-auth ConfigMap data.
+resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
   metadata {
     name      = "aws-auth"
     namespace = "kube-system"
   }
 
+  # This allows Terraform to manage this specific field without conflicts
+  field_manager = "terraform-provider-kubernetes"
+  force         = true # Takes ownership of the data field
+
   data = {
     "mapUsers" = yamlencode(
-      # We merge the default EKS node mapping with our new admin user mapping
+      # Merge the existing users from the data source with your new user
       union(
-        yamldecode(data.aws_eks_cluster_auth.main.value).mapUsers,
+        # The existing users are now read correctly from the new data source
+        yamldecode(data.kubernetes_config_map_v1.aws_auth.data.mapUsers),
         [
           {
             # ARN is passed dynamically from the workflow
             userarn  = var.cluster_creator_arn
-            # extracting the username from the full ARN
+            # Extracts the username (e.g., "ItAdmin") from the full ARN
             username = split("/", var.cluster_creator_arn)[1]
-
+            # Grants full cluster-admin permissions
             groups   = ["system:masters"]
           }
         ]
       )
     )
   }
-
-
-  depends_on = [module.eks]
 }
