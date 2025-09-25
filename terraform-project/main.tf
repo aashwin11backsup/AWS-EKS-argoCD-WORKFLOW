@@ -65,7 +65,7 @@ resource "kubernetes_config_map_v1_data" "aws_auth_patch" {
   data = {
     "mapUsers" = yamlencode(
       # Merge the existing users from the data source with your new user
-      union(
+      setunion(
         # The existing users are now read correctly from the new data source
         yamldecode(data.kubernetes_config_map_v1.aws_auth.data.mapUsers),
         [
