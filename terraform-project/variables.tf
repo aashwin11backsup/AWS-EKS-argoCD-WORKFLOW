@@ -20,3 +20,9 @@ variable "cluster_version" {
   type        = string
   default     = "1.31"
 }
+
+#-- adding this to access the cluster locally by the user creating the CLuster
+variable "cluster_creator_arn" {
+  description = "The ARN of the IAM entity that is creating the cluster. This ARN will be granted admin access."
+  type        = string
+}

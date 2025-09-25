@@ -36,3 +36,44 @@ module "eks" {
   max_size             = 3
   min_size             = 1
 }
+
+
+
+#----------- Changing the Code after [LOCAL CONNECTION TO THE CLUSTER]--------------------
+
+# Data source to retrieve the default aws-auth config from the cluster.
+
+data "aws_eks_cluster_auth" "main" {
+  name = module.eks.cluster_name
+}
+
+
+resource "kubernetes_config_map_v1_data" "aws_auth" {
+  # This depends on the Kubernetes provider configured in providers.tf
+  metadata {
+    name      = "aws-auth"
+    namespace = "kube-system"
+  }
+
+  data = {
+    "mapUsers" = yamlencode(
+      # We merge the default EKS node mapping with our new admin user mapping
+      union(
+        yamldecode(data.aws_eks_cluster_auth.main.value).mapUsers,
+        [
+          {
+            # ARN is passed dynamically from the workflow
+            userarn  = var.cluster_creator_arn
+            # extracting the username from the full ARN
+            username = split("/", var.cluster_creator_arn)[1]
+
+            groups   = ["system:masters"]
+          }
+        ]
+      )
+    )
+  }
+
+
+  depends_on = [module.eks]
+}
