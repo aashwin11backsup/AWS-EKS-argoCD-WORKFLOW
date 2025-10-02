@@ -48,7 +48,7 @@ jobs:
         id: create_policy
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
-          
+
           # Check if the policy already exists
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
@@ -89,9 +89,10 @@ jobs:
           ROLE_NAME=${{ github.event.inputs.cluster_name }}-ALBControllerRole
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           
-          OIDC_PROVIDER=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | sed -e "s|^https://||")
-          echo "OIDC Provider: $OIDC_PROVIDER"
-
+          OIDC_PROVIDER_FULL=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | sed -e "s|^https://||")
+          OIDC_PROVIDER_ROOT=$(echo $OIDC_PROVIDER_FULL | cut -d'/' -f1)
+          echo "OIDC Provider Root for Principal: $OIDC_PROVIDER_ROOT"
+          
           cat > trust-policy.json <<EOF
           {
               "Version": "2012-10-17",
@@ -99,12 +100,12 @@ jobs:
                   {
                       "Effect": "Allow",
                       "Principal": {
-                          "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                          "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER_ROOT}"
                       },
                       "Action": "sts:AssumeRoleWithWebIdentity",
                       "Condition": {
                           "StringEquals": {
-                              "${OIDC_PROVIDER}:sub": "system:serviceaccount:kube-system:${SERVICE_ACCOUNT_NAME}"
+                              "${OIDC_PROVIDER_FULL}:sub": "system:serviceaccount:kube-system:${SERVICE_ACCOUNT_NAME}"
                           }
                       }
                   }
@@ -190,7 +191,7 @@ jobs:
           echo "=========================================================================="
 
           echo " --->ArgoCD initial admin password:"
-          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base_64 -d
           echo ""
           echo "Use the output of this command as the password for ArgoCD."
 
