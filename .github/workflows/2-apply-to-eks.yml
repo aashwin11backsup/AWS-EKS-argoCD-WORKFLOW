@@ -1,20 +1,20 @@
-name: "2-Deploy Apps to EKS"
+name: '2-Deploy Apps to EKS'
 
 on:
   workflow_dispatch:
     inputs:
       aws_region:
-        description: "AWS Region (e.g., us-east-1)"
+        description: 'AWS Region (e.g., us-east-1)'
         required: true
-        default: "us-east-1"
+        default: 'us-east-1'
       cluster_name:
-        description: "EKS Cluster Name (e.g., staging-eks-demo)"
+        description: 'EKS Cluster Name (e.g., staging-eks-demo)'
         required: true
-        default: "staging-eks-demo"
+        default: 'staging-eks-demo'
 
 jobs:
   deploy-to-eks:
-    name: "Deploy ALB Controller and ArgoCD"
+    name: 'Deploy ALB Controller and ArgoCD'
     runs-on: ubuntu-latest
 
     permissions:
@@ -32,23 +32,19 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
-      #-------------------------------------------------------------------------------------------------------------------------------
       # 1. Connect to the EKS Cluster
       - name: Update Kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
           echo "CORRECT: Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
-          sleep 5
-          echo "-----> Checking nodes:"
           kubectl get nodes
-          sleep 5
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
+
+      # 2. Setup IAM for ALB Controller (This step now performs all IAM operations)
       - name: Setup IAM for ALB Controller (IRSA)
         id: setup_iam
         run: |
           # Part A: Create the IAM Policy with Route53 permissions
-          POLICY_NAME="AWSLoadBalancerControllerIAMPOLICY"
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
           echo "Checking for IAM policy: $POLICY_NAME"
           POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
@@ -73,16 +69,17 @@ jobs:
           echo "OIDC provider check complete. Waiting 15s for propagation..."
           sleep 15
 
-          # Part C: Create the IAM Role that trusts the controller's Service Account
+          # Part C: Create the IAM Role with the Correct Trust Policy
           ROLE_NAME=${{ github.event.inputs.cluster_name }}-ALBControllerRole
           SERVICE_ACCOUNT_NAME=aws-load-balancer-controller
           
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
           OIDC_ISSUER_URL=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text)
-          OIDC_PROVIDER_URL_WITHOUT_HTTPS=$(echo "${OIDC_ISSUER_URL}" | sed -e "s/^https:\/\///")
-          OIDC_PROVIDER_ROOT=$(echo "${OIDC_PROVIDER_URL_WITHOUT_HTTPS}" | cut -d'/' -f1)
+          OIDC_PROVIDER_ROOT=$(echo "${OIDC_ISSUER_URL}" | sed -e "s/^https:\/\///" | cut -d'/' -f1)
 
-          echo "Generating Trust Policy for OIDC Root: ${OIDC_PROVIDER_ROOT}"
+          echo "Generating SIMPLIFIED Trust Policy for OIDC Root: ${OIDC_PROVIDER_ROOT}"
+
+          # --- DIAGNOSTIC CHANGE: The 'Condition' block is temporarily removed ---
           cat > trust-policy.json <<EOF
           {
               "Version": "2012-10-17",
@@ -92,12 +89,7 @@ jobs:
                       "Principal": {
                           "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER_ROOT}"
                       },
-                      "Action": "sts:AssumeRoleWithWebIdentity",
-                      "Condition": {
-                          "StringEquals": {
-                              "${OIDC_PROVIDER_URL_WITHOUT_HTTPS}:sub": "system:serviceaccount:kube-system:${SERVICE_ACCOUNT_NAME}"
-                          }
-                      }
+                      "Action": "sts:AssumeRoleWithWebIdentity"
                   }
               ]
           }
@@ -109,23 +101,23 @@ jobs:
             ROLE_ARN=$(aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json --query 'Role.Arn' --output text)
           else
             echo "IAM Role $ROLE_NAME already exists."
+            echo "Updating assume-role-policy to ensure it is correct..."
+            aws iam update-assume-role-policy --role-name $ROLE_NAME --policy-document file://trust-policy.json
           fi
           
           echo "Attaching policy to the role..."
           aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $POLICY_ARN
 
           echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
-      #-------------------------------------------------------------------------------------------------------------------------------
+
       # 3. Install AWS Load Balancer Controller
       - name: Install AWS Load Balancer Controller
         run: |
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
-          echo "Found VPC ID: $VPC_ID"
-          sleep 5
-
+          
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-
+          
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
@@ -134,54 +126,42 @@ jobs:
             --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${{ steps.setup_iam.outputs.role_arn }}" \
             --set vpcId=$VPC_ID \
             --set region=${{ github.event.inputs.aws_region }}
-
-          echo "----------WAITING FOR 20 SECONDS FOR THE PODS TO RUN----------"
+          
+          echo "Verifying controller pods..."
           sleep 15
-          echo "---> Checking kube-system pods after ALB controller install:"
           kubectl get pods -n kube-system
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install ArgoCD with --insecure flag
+
+      # 4. Install ArgoCD
       - name: Install ArgoCD
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
-
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --create-namespace \
             --set server.service.type=ClusterIP \
             --set server.extraArgs={--insecure}
-          echo "----------WAITING FOR 20 SECONDS FOR THE argocd PODS TO RUN----------"
+          echo "Verifying argocd pods..."
           sleep 15
-          echo "---> Checking argocd pods after ArgoCD install:"
           kubectl get pods -n argocd
-      #-------------------------------------------------------------------------------------------------------------------------------
+
       # 5. Expose ArgoCD Server via Ingress
       - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f kubernetes-manifests/argocd-ingress.yml
-          sleep 5
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 6. Get the ALB DNS Name
+
+      # 6. Get the ALB DNS Name and Password
       - name: Get ArgoCD Ingress URL
         run: |
-          echo "---------Waiting for Ingress to get an address... 30 SECONDS SLEEP------"
+          echo "Waiting for Ingress to get an address..."
           sleep 30
           kubectl get ingress argocd-server-ingress -n argocd -o wide
-          sleep 5
-          echo " --->Describe Ingress:"
-          kubectl describe ingress argocd-server-ingress -n argocd
-          sleep 5
           echo "=========================================================================="
           echo "Your ArgoCD URL will be available in a few minutes at:"
           kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
           echo ""
-          echo "=========================================================================="
-
-          echo " --->ArgoCD initial admin password:"
+          echo "ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
           echo ""
-          echo "Use the output of this command as the password for ArgoCD."
-
-#-------------------------------------------------------------------------------------------------------------------------------
+          echo "=========================================================================="
