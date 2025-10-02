@@ -129,6 +129,7 @@ jobs:
             echo "--> Pushed updated manifest to repository."
           fi
 
+
       # - name: Install Argo CD CLI
       #   run: |
       #     echo "--> Installing Argo CD CLI..."
