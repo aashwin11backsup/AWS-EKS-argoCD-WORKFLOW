@@ -58,27 +58,22 @@ jobs:
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Configure AWS Credentials
-        run: echo "--> Configuring AWS credentials for region ${{ env.AWS_REGION }}..."
-      - uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        run: echo "--> Logging into Amazon ECR..."
-      - id: login-ecr
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
-        run: echo "--> Setting up Docker Buildx for advanced cache support..."
-      - uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3
       
-
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
-        run: echo "--> Building and pushing Docker image with tags: latest, ${{ steps.short-sha.outputs.sha }}"
-      - uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: true
@@ -146,9 +141,6 @@ jobs:
       #     echo "--> Logging into Argo CD server..."
       #     argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure
       #     echo "--> Argo CD login successful."
-      #   env:
-      #     ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-      #     ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
       # - name: Sync Argo CD Application
       #   run: |
