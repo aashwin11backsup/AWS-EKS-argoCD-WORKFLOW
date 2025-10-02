@@ -43,12 +43,25 @@ jobs:
           kubectl get nodes
           sleep 5
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 2. Create IAM Policy for AWS Load Balancer Controller
+      # 2. Ensure IAM OIDC provider exists for the cluster
+      - name: Ensure IAM OIDC Provider Exists
+        run: |
+          echo "Installing eksctl..."
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          echo "eksctl version: $(eksctl version)"
+          
+          echo "Associating IAM OIDC provider for cluster..."
+          eksctl utils associate-iam-oidc-provider --cluster ${{ github.event.inputs.cluster_name }} --approve
+          echo "IAM OIDC provider check complete. Waiting for 15 seconds for propagation..."
+          sleep 15
+      #-------------------------------------------------------------------------------------------------------------------------------
+      # 3. Create IAM Policy for AWS Load Balancer Controller
       - name: Create IAM Policy for ALB Controller
         id: create_policy
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
-
+          
           # Check if the policy already exists
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
@@ -80,23 +93,8 @@ jobs:
           fi
           # Set the policy ARN as a step output to be used by the next step
           echo "policy_arn=$POLICY_ARN" >> $GITHUB_OUTPUT
-
-
-            # 2.1 :------>> NEW STEP: Ensure IAM OIDC provider exists for the cluster
-      - name: Ensure IAM OIDC Provider Exists
-        run: |
-          echo "Installing eksctl..."
-          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-          sudo mv /tmp/eksctl /usr/local/bin
-          echo "eksctl version: $(eksctl version)"
-          
-          echo "Associating IAM OIDC provider for cluster..."
-          eksctl utils associate-iam-oidc-provider --cluster ${{ github.event.inputs.cluster_name }} --approve
-          echo "IAM OIDC provider check complete."
-
-
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 3. Create IAM Role for Service Account (IRSA)
+      # 4. Create IAM Role for Service Account (IRSA)
       - name: Create IAM Role for Service Account (IRSA)
         id: create_irsa_role
         run: |
@@ -104,110 +102,4 @@ jobs:
           ROLE_NAME=${{ github.event.inputs.cluster_name }}-ALBControllerRole
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           
-          OIDC_PROVIDER_FULL=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | sed -e "s|^https://||")
-          OIDC_PROVIDER_ROOT=$(echo $OIDC_PROVIDER_FULL | cut -d'/' -f1)
-          echo "OIDC Provider Root for Principal: $OIDC_PROVIDER_ROOT"
-          
-          cat > trust-policy.json <<EOF
-          {
-              "Version": "2012-10-17",
-              "Statement": [
-                  {
-                      "Effect": "Allow",
-                      "Principal": {
-                          "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER_ROOT}"
-                      },
-                      "Action": "sts:AssumeRoleWithWebIdentity",
-                      "Condition": {
-                          "StringEquals": {
-                              "${OIDC_PROVIDER_FULL}:sub": "system:serviceaccount:kube-system:${SERVICE_ACCOUNT_NAME}"
-                          }
-                      }
-                  }
-              ]
-          }
-          EOF
-          
-          echo "Trust policy created. Checking for existing role: $ROLE_NAME"
-          ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query 'Role.Arn' --output text 2>/dev/null)
-          if [ -z "$ROLE_ARN" ]; then
-            echo "Creating IAM Role: $ROLE_NAME"
-            ROLE_ARN=$(aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json --query 'Role.Arn' --output text)
-          else
-            echo "IAM Role $ROLE_NAME already exists."
-          fi
-          
-          echo "Attaching policy to the new role..."
-          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn ${{ steps.create_policy.outputs.policy_arn }}
-
-          echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install AWS Load Balancer Controller
-      - name: Install AWS Load Balancer Controller
-        run: |
-          VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
-          echo "Found VPC ID: $VPC_ID"
-          sleep 5
-
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo update
-
-          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-            --namespace kube-system \
-            --set clusterName=${{ github.event.inputs.cluster_name }} \
-            --set serviceAccount.create=true \
-            --set serviceAccount.name=aws-load-balancer-controller \
-            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${{ steps.create_irsa_role.outputs.role_arn }}" \
-            --set vpcId=$VPC_ID \
-            --set region=${{ github.event.inputs.aws_region }}
-
-          echo "----------WAITING FOR 20 SECONDS FOR THE PODS TO RUN----------"
-          sleep 15
-          echo "---> Checking kube-system pods after ALB controller install:"
-          kubectl get pods -n kube-system
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 5. Install ArgoCD with --insecure flag
-      - name: Install ArgoCD
-        run: |
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
-
-          helm upgrade --install argocd argo/argo-cd \
-            --namespace argocd \
-            --create-namespace \
-            --set server.service.type=ClusterIP \
-            --set server.extraArgs={--insecure}
-          echo "----------WAITING FOR 20 SECONDS FOR THE argocd PODS TO RUN----------"
-          sleep 15
-          echo "---> Checking argocd pods after ArgoCD install:"
-          kubectl get pods -n argocd
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 6. Expose ArgoCD Server via Ingress
-      - name: Expose ArgoCD Server
-        run: |
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
-          kubectl apply -f kubernetes-manifests/argocd-ingress.yml
-          sleep 5
-      #-------------------------------------------------------------------------------------------------------------------------------
-      # 7. Get the ALB DNS Name
-      - name: Get ArgoCD Ingress URL
-        run: |
-          echo "---------Waiting for Ingress to get an address... 30 SECONDS SLEEP------"
-          sleep 30
-          kubectl get ingress argocd-server-ingress -n argocd -o wide
-          sleep 5
-          echo " --->Describe Ingress:"
-          kubectl describe ingress argocd-server-ingress -n argocd
-          sleep 5
-          echo "=========================================================================="
-          echo "Your ArgoCD URL will be available in a few minutes at:"
-          kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-          echo ""
-          echo "=========================================================================="
-
-          echo " --->ArgoCD initial admin password:"
-          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base_64 -d
-          echo ""
-          echo "Use the output of this command as the password for ArgoCD."
-
-#-------------------------------------------------------------------------------------------------------------------------------
+          OIDC_PROVIDER_FULL=$(aws eks describe
