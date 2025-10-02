@@ -123,34 +123,38 @@ jobs:
 
 
 
-#-------------------------------------  5. Detach IAM Policy from EKS Node Role ----------------------------------------
-#NOTE: Why Detach over Delete
-    # as it's a managed policy , it  could be used elsewhere
+#-------------------------------------  5. Detach and Delete IAM Policy ----------------------------------------
+# NOTE: We now delete the policy because it is custom-created by the deploy workflow
+# and is specific to this application stack.
 
-
-
-      - name: Detach IAM Policy for ALB Controller
+      - name: Detach and Delete IAM Policy for ALB Controller
         run: |
-          echo "---------> Detaching IAM policy from node role..."
+          echo "---------> Starting detachment and deletion of IAM policy..."
           POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn" --output text)
 
           if [ -z "$POLICY_ARN" ]; then
-            echo "IAM Policy 'AWSLoadBalancerControllerIAMPolicy' not found. Skipping detachment."
+            echo "IAM Policy 'AWSLoadBalancerControllerIAMPolicy' not found. Skipping cleanup."
             exit 0
           fi
 
+          echo "Found policy to clean up: $POLICY_ARN"
+          
           NODE_GROUP_NAME=$(aws eks list-nodegroups --cluster-name ${{ github.event.inputs.cluster_name }} --query "nodegroups[0]" --output text)
           if [ -z "$NODE_GROUP_NAME" ]; then
             echo "No node groups found in cluster. Skipping detachment."
-            exit 0
+          else
+            NODE_ROLE_ARN=$(aws eks describe-nodegroup --cluster-name ${{ github.event.inputs.cluster_name }} --nodegroup-name "$NODE_GROUP_NAME" --query "nodegroup.nodeRole" --output text)
+            NODE_ROLE_NAME=$(basename $NODE_ROLE_ARN)
+
+            echo "Detaching policy $POLICY_ARN from role $NODE_ROLE_NAME"
+            aws iam detach-role-policy --role-name $NODE_ROLE_NAME --policy-arn $POLICY_ARN || echo "Failed to detach policy, it might have already been detached."
+            sleep 5 # Allow a moment for the detachment to propagate
           fi
+          
+          echo "Deleting policy $POLICY_ARN"
+          aws iam delete-policy --policy-arn $POLICY_ARN || echo "Failed to delete policy, it might have been already deleted."
 
-          NODE_ROLE_ARN=$(aws eks describe-nodegroup --cluster-name ${{ github.event.inputs.cluster_name }} --nodegroup-name "$NODE_GROUP_NAME" --query "nodegroup.nodeRole" --output text)
-          NODE_ROLE_NAME=$(basename $NODE_ROLE_ARN)
-
-          echo "Detaching policy $POLICY_ARN from role $NODE_ROLE_NAME"
-          aws iam detach-role-policy --role-name $NODE_ROLE_NAME --policy-arn $POLICY_ARN || echo "Failed to detach policy, it might have been already detached."
-          echo "COMPLETED:-------> Policy detachment process complete."
+          echo "COMPLETED:-------> Policy cleanup process complete."
 #-------------------------------------------------------------------------------------------------------------------------------
 
 
@@ -158,6 +162,6 @@ jobs:
         run: |
           echo "=========================================================================================="
           echo "COMPLETED:-->>EKS cluster cleanup is complete."
-          echo "You can now safely run '1-terraform-infra.yml' workflow to destroy the remaining infrastructure. Select 'destroy' as input during workflow dispatch"
+          echo "You can now safely run the Terraform workflow to destroy the remaining infrastructure."
           echo "=========================================================================================="
 #-------------------------------------------------------------------------------------------------------------------------------
