@@ -1,14 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
 resources:
 - ../../base
 
-
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
 patches:
-- path: ingress-patch.json
+- patch: |-
+    - op: replace
+      path: /spec/rules/0/host
+      value: argocd.trialphase.shop
+    - op: replace
+      path: /spec/rules/1/host
+      value: app.trialphase.shop
+    - op: replace
+      path: /spec/tls/0/hosts/0
+      value: argocd.trialphase.shop
+    - op: replace
+      path: /spec/tls/0/hosts/1
+      value: app.trialphase.shop
   target:
-    group: networking.k8s.io
     kind: Ingress
-    name: currency-converter-ingress
-    version: v1
+    name: shared-main-ingress 
+    
 - path: deployment-patch.yaml
+  target:
+    kind: Deployment
+    name: currency-converter 

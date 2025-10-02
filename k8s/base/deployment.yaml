@@ -14,15 +14,16 @@ spec:
     spec:
       containers:
       - name: currency-converter
-        image: afakharany/currencyconverter:c99eba1
+        image: 124355660184.dkr.ecr.us-east-1.amazonaws.com/currency_converter_image:v1.0
         ports:
         - containerPort: 5555
         env:
         - name: APIKEY
-          valueFrom:
-            secretKeyRef:
-              name: api-keys
-              key: APIKEY
+          # valueFrom:
+          #   secretKeyRef:
+          #     name: api-keys
+          #     key: 
+          value: "68ce0008a1mshdd82844322d9e5ep1eb7ddjsn4c71324ca316"
         - name: APIHOST
           value: "currency-conversion-and-exchange-rates.p.rapidapi.com"
         - name: FLASK_ENV

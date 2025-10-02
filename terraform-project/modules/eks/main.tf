@@ -30,8 +30,8 @@ resource "aws_eks_cluster" "main" {
     subnet_ids = var.private_subnet_ids
   }
 
-   access_config {
-    authentication_mode                         = "API"
+    access_config {
+    authentication_mode                       = "API"
     bootstrap_cluster_creator_admin_permissions = true
   }
 
@@ -65,10 +65,12 @@ resource "aws_iam_role_policy_attachment" "node_cni_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
+# --- ADDITION 1: Attach the ECR Read-Only Policy ---
 resource "aws_iam_role_policy_attachment" "node_ecr_policy" {
   role       = aws_iam_role.node_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
+# --- END OF ADDITION 1 ---
 
 
 # EKS Node Group
@@ -96,7 +98,9 @@ resource "aws_eks_node_group" "main" {
   depends_on = [
     aws_iam_role_policy_attachment.node_worker_policy,
     aws_iam_role_policy_attachment.node_cni_policy,
+    # --- ADDITION 2: Add a dependency on the new policy attachment ---
     aws_iam_role_policy_attachment.node_ecr_policy,
+    # --- END OF ADDITION 2 ---
   ]
 
   lifecycle {

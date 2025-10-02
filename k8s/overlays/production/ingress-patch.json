@@ -2,7 +2,21 @@
   {
     "op": "replace",
     "path": "/spec/rules/0/host",
-    "value": "prod.currencyconverter.local"
+    "value": "argocd.trialphase.shop"
+  },
+  {
+    "op": "replace",
+    "path": "/spec/rules/1/host",
+    "value": "app.trialphase.shop"
+  },
+  {
+    "op": "replace",
+    "path": "/spec/tls/0/hosts/0",
+    "value": "argocd.trialphase.shop"
+  },
+  {
+    "op": "replace",
+    "path": "/spec/tls/0/hosts/1",
+    "value": "app.trialphase.shop"
   }
 ]
-
