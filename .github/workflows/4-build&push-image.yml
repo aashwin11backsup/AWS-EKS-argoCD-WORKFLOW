@@ -27,11 +27,16 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          echo "--> Installing Python dependencies from requirements.txt..."
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          echo "--> Dependencies installed."
       
       - name: Run Tests
-        run: python -m unittest discover -s tests
+        run: |
+          echo "--> Running unit tests..."
+          python -m unittest discover -s tests
+          echo "--> Tests passed successfully!"
 
   # Job 2: Build and push the Docker image to ECR
   # This job will only run if the 'test' job completes successfully
@@ -48,22 +53,36 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        run: echo "--> Configuring AWS credentials for region ${{ env.AWS_REGION }}..."
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
+        run: echo "--> Logging into Amazon ECR..."
+      - id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      # --- START OF THE FIX ---
+      - name: Set up Docker Buildx
+        run: echo "--> Setting up Docker Buildx for advanced cache support..."
+      - uses: docker/setup-buildx-action@v3
+      # --- END OF THE FIX ---
 
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
-        uses: docker/build-push-action@v5
+        run: echo "--> Building and pushing the Docker image to ${{ env.ECR_REPOSITORY }}..."
+      - uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      
+      - name: Final Output
+        run: |
+          echo "--> ✅ Image push complete!"
+          echo "--> Image URI: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest"
