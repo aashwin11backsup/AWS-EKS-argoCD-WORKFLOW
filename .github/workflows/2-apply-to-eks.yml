@@ -80,6 +80,21 @@ jobs:
           fi
           # Set the policy ARN as a step output to be used by the next step
           echo "policy_arn=$POLICY_ARN" >> $GITHUB_OUTPUT
+
+
+            # 2.1 :------>> NEW STEP: Ensure IAM OIDC provider exists for the cluster
+      - name: Ensure IAM OIDC Provider Exists
+        run: |
+          echo "Installing eksctl..."
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          echo "eksctl version: $(eksctl version)"
+          
+          echo "Associating IAM OIDC provider for cluster..."
+          eksctl utils associate-iam-oidc-provider --cluster ${{ github.event.inputs.cluster_name }} --approve
+          echo "IAM OIDC provider check complete."
+
+
       #-------------------------------------------------------------------------------------------------------------------------------
       # 3. Create IAM Role for Service Account (IRSA)
       - name: Create IAM Role for Service Account (IRSA)
