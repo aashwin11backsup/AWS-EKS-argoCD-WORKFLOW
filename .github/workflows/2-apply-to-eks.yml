@@ -48,7 +48,7 @@ jobs:
         id: create_policy
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
-
+          
           # Check if the policy already exists
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
