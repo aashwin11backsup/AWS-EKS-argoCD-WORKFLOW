@@ -130,6 +130,7 @@ jobs:
           fi
 
 
+
       # - name: Install Argo CD CLI
       #   run: |
       #     echo "--> Installing Argo CD CLI..."
