@@ -1,20 +1,20 @@
-name: '2-Deploy Apps to EKS'
+name: "2-Deploy Apps to EKS"
 
 on:
   workflow_dispatch:
     inputs:
       aws_region:
-        description: 'AWS Region (e.g., us-east-1)'
+        description: "AWS Region (e.g., us-east-1)"
         required: true
-        default: 'us-east-1'
+        default: "us-east-1"
       cluster_name:
-        description: 'EKS Cluster Name (e.g., staging-eks-demo)'
+        description: "EKS Cluster Name (e.g., staging-eks-demo)"
         required: true
-        default: 'staging-eks-demo'
+        default: "staging-eks-demo"
 
 jobs:
   deploy-to-eks:
-    name: 'Deploy ALB Controller and ArgoCD'
+    name: "Deploy ALB Controller and ArgoCD"
     runs-on: ubuntu-latest
 
     permissions:
@@ -32,9 +32,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
-
-
-#-------------------------------------------------------------------------------------------------------------------------------
+      #-------------------------------------------------------------------------------------------------------------------------------
       # 1. Connect to the EKS Cluster
       - name: Update Kubeconfig
         run: |
@@ -44,10 +42,7 @@ jobs:
           echo "-----> Checking nodes:"
           kubectl get nodes
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
-
-
-
+      #-------------------------------------------------------------------------------------------------------------------------------
       # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
       - name: Ensure IAM Policy for ALB Controller
         run: |
@@ -58,10 +53,27 @@ jobs:
 
           if [ -n "$EXISTING_POLICY_ARN" ]; then
             echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
+            # Note: This workflow assumes an existing policy has the right permissions.
+            # If you run into issues after the first run, you may need to delete the policy in IAM to have it recreated with the Route53 permissions.
             POLICY_ARN=$EXISTING_POLICY_ARN
           else
             echo "Policy $POLICY_NAME not found. Creating it..."
             curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            
+            # --- START OF THE FIX for ROUTE 53---
+            # Add required Route53 permissions for automatic DNS updates
+            echo "Adding Route53 permissions to the IAM policy..."
+            jq '.Statement += [{
+                "Effect": "Allow",
+                "Action": [
+                    "route53:ChangeResourceRecordSets",
+                    "route53:ListResourceRecordSets",
+                    "route53:ListHostedZonesByName"
+                ],
+                "Resource": "*"
+            }]' iam-policy.json > iam-policy-modified.json && mv iam-policy-modified.json iam-policy.json
+            # --- END OF THE FIX ---
+            
             POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
             echo "Created policy: $POLICY_ARN"
           fi
@@ -89,12 +101,7 @@ jobs:
           echo "Attaching IAM policy to node role: $NODE_ROLE"
           aws iam attach-role-policy --role-name $(basename $NODE_ROLE) --policy-arn $POLICY_ARN || true
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
-
-
-
-
-
+      #-------------------------------------------------------------------------------------------------------------------------------
       # 3. Install AWS Load Balancer Controller
       - name: Install AWS Load Balancer Controller
         run: |
@@ -104,7 +111,7 @@ jobs:
 
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-          
+
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
@@ -112,23 +119,18 @@ jobs:
             --set serviceAccount.name=aws-load-balancer-controller \
             --set vpcId=$VPC_ID \
             --set region=${{ github.event.inputs.aws_region }}
-          
+
           echo "----------WAITING FOR 20 SECONDS FOR THE PODS TO RUN----------"
           sleep 15
           echo "---> Checking kube-system pods after ALB controller install:"
           kubectl get pods -n kube-system
- #-------------------------------------------------------------------------------------------------------------------------------
-
-
-
-
-
+      #-------------------------------------------------------------------------------------------------------------------------------
       # 4. Install ArgoCD with --insecure flag
       - name: Install ArgoCD
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
-          
+
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --create-namespace \
@@ -138,21 +140,14 @@ jobs:
           sleep 15
           echo "---> Checking argocd pods after ArgoCD install:"
           kubectl get pods -n argocd
-#-------------------------------------------------------------------------------------------------------------------------------
-
-
-
-
+      #-------------------------------------------------------------------------------------------------------------------------------
       # 5. Expose ArgoCD Server via Ingress
       - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f kubernetes-manifests/argocd-ingress.yml
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
-
-
-
+      #-------------------------------------------------------------------------------------------------------------------------------
       # 6. Get the ALB DNS Name
       - name: Get ArgoCD Ingress URL
         run: |
@@ -168,9 +163,10 @@ jobs:
           kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
           echo ""
           echo "=========================================================================="
-    
+
           echo " --->ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
           echo ""
           echo "Use the output of this command as the password for ArgoCD."
+
 #-------------------------------------------------------------------------------------------------------------------------------
