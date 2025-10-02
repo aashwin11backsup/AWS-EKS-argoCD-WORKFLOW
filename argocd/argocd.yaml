@@ -6,8 +6,8 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'https://github.com/abohmeed/currencyconverter.git'
-    targetRevision: HEAD
+    repoURL: 'https://github.com/aashwin11backsup/AWS-EKS-argoCD-WORKFLOW.git'
+    targetRevision: https-check
     path: argocd
   destination:
     server: 'https://kubernetes.default.svc'
