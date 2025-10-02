@@ -43,8 +43,9 @@ jobs:
           kubectl get nodes
           sleep 5
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
-      - name: Ensure IAM Policy for ALB Controller
+      # 2. Create IAM Policy for AWS Load Balancer Controller
+      - name: Create IAM Policy for ALB Controller
+        id: create_policy
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
 
@@ -77,32 +78,55 @@ jobs:
             POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
             echo "Created policy: $POLICY_ARN"
           fi
-          sleep 5
-
-          # Dynamically fetch node group name
-          NODE_GROUP_NAME=$(aws eks list-nodegroups \
-            --cluster-name ${{ github.event.inputs.cluster_name }} \
-            --query "nodegroups[0]" \
-            --output text)
-
-          if [ -z "$NODE_GROUP_NAME" ]; then
-            echo "XXXXXXX: --- No node groups found in cluster ${{ github.event.inputs.cluster_name }} -----XXXXX"
-            exit 1
-          fi
-
-          echo "Found node group: $NODE_GROUP_NAME"
-          sleep 5
-
-          NODE_ROLE=$(aws eks describe-nodegroup \
-            --cluster-name ${{ github.event.inputs.cluster_name }} \
-            --nodegroup-name "$NODE_GROUP_NAME" \
-            --query "nodegroup.nodeRole" --output text)
-
-          echo "Attaching IAM policy to node role: $NODE_ROLE"
-          aws iam attach-role-policy --role-name $(basename $NODE_ROLE) --policy-arn $POLICY_ARN || true
-          sleep 5
+          # Set the policy ARN as a step output to be used by the next step
+          echo "policy_arn=$POLICY_ARN" >> $GITHUB_OUTPUT
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 3. Install AWS Load Balancer Controller
+      # 3. Create IAM Role for Service Account (IRSA)
+      - name: Create IAM Role for Service Account (IRSA)
+        id: create_irsa_role
+        run: |
+          SERVICE_ACCOUNT_NAME=aws-load-balancer-controller
+          ROLE_NAME=${{ github.event.inputs.cluster_name }}-ALBControllerRole
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          
+          OIDC_PROVIDER=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | sed -e "s/^https://\///")
+          echo "OIDC Provider: $OIDC_PROVIDER"
+
+          cat > trust-policy.json <<EOF
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Principal": {
+                          "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                      },
+                      "Action": "sts:AssumeRoleWithWebIdentity",
+                      "Condition": {
+                          "StringEquals": {
+                              "${OIDC_PROVIDER}:sub": "system:serviceaccount:kube-system:${SERVICE_ACCOUNT_NAME}"
+                          }
+                      }
+                  }
+              ]
+          }
+          EOF
+          
+          echo "Trust policy created. Checking for existing role: $ROLE_NAME"
+          ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query 'Role.Arn' --output text 2>/dev/null)
+          if [ -z "$ROLE_ARN" ]; then
+            echo "Creating IAM Role: $ROLE_NAME"
+            ROLE_ARN=$(aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json --query 'Role.Arn' --output text)
+          else
+            echo "IAM Role $ROLE_NAME already exists."
+          fi
+          
+          echo "Attaching policy to the new role..."
+          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn ${{ steps.create_policy.outputs.policy_arn }}
+
+          echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+      #-------------------------------------------------------------------------------------------------------------------------------
+      # 4. Install AWS Load Balancer Controller
       - name: Install AWS Load Balancer Controller
         run: |
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
@@ -117,6 +141,7 @@ jobs:
             --set clusterName=${{ github.event.inputs.cluster_name }} \
             --set serviceAccount.create=true \
             --set serviceAccount.name=aws-load-balancer-controller \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="${{ steps.create_irsa_role.outputs.role_arn }}" \
             --set vpcId=$VPC_ID \
             --set region=${{ github.event.inputs.aws_region }}
 
@@ -125,7 +150,7 @@ jobs:
           echo "---> Checking kube-system pods after ALB controller install:"
           kubectl get pods -n kube-system
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install ArgoCD with --insecure flag
+      # 5. Install ArgoCD with --insecure flag
       - name: Install ArgoCD
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm
@@ -141,14 +166,14 @@ jobs:
           echo "---> Checking argocd pods after ArgoCD install:"
           kubectl get pods -n argocd
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 5. Expose ArgoCD Server via Ingress
+      # 6. Expose ArgoCD Server via Ingress
       - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f kubernetes-manifests/argocd-ingress.yml
           sleep 5
       #-------------------------------------------------------------------------------------------------------------------------------
-      # 6. Get the ALB DNS Name
+      # 7. Get the ALB DNS Name
       - name: Get ArgoCD Ingress URL
         run: |
           echo "---------Waiting for Ingress to get an address... 30 SECONDS SLEEP------"
