@@ -89,7 +89,7 @@ jobs:
           ROLE_NAME=${{ github.event.inputs.cluster_name }}-ALBControllerRole
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           
-          OIDC_PROVIDER=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | sed -e "s/^https://\///")
+          OIDC_PROVIDER=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.identity.oidc.issuer" --output text | sed -e "s|^https://||")
           echo "OIDC Provider: $OIDC_PROVIDER"
 
           cat > trust-policy.json <<EOF
