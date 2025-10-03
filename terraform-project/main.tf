@@ -1,102 +1,207 @@
-# --- Data sources to get available AZs in the chosen region ---
-data "aws_availability_zones" "available" {
-  state = "available"
-}
+name: '2-Deploy Apps to EKS'
 
-# --- Local variables for networking configuration ---
-locals {
-  vpc_cidr             = "10.0.0.0/16"
-  public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
-  private_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24"]
-  availability_zones   = slice(data.aws_availability_zones.available.names, 0, 2)
-}
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: 'AWS Region (e.g., us-east-1)'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name (e.g., staging-eks-demo)'
+        required: true
+        default: 'staging-eks-demo'
 
-# --- Networking Module ---
-module "vpc" {
-  source = "./modules/vpc"
+jobs:
+  deploy-to-eks:
+    name: 'Deploy ALB Controller and ArgoCD'
+    runs-on: ubuntu-latest
 
-  project_name         = var.project_name
-  vpc_cidr             = local.vpc_cidr
-  public_subnet_cidrs  = local.public_subnet_cidrs
-  private_subnet_cidrs = local.private_subnet_cidrs
-  availability_zones   = local.availability_zones
-}
+    permissions:
+      id-token: write
+      contents: read
 
-# --- EKS Cluster Module ---
-module "eks" {
-  source = "./modules/eks"
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  project_name       = var.project_name
-  cluster_version    = var.cluster_version
-  private_subnet_ids = module.vpc.private_subnet_ids
-  instance_types     = var.instance_types
-  
-  # Node group scaling
-  desired_size       = 2
-  max_size           = 3
-  min_size           = 1
-}
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.aws_region }}
 
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 1. Connect to the EKS Cluster
+      - name: Update Kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
+          echo "Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
+          sleep 5
+          echo "-----> Checking nodes:"
+          kubectl get nodes
+          sleep 5
+          echo "-----> Verifying cluster access:"
+          kubectl auth can-i get pods -A
+#-------------------------------------------------------------------------------------------------------------------------------
 
-#---------- Change after the LOCAL Access Issue ----------------
-#ISSUE : When bootstraping the IAM User in the EKS Cluster, ITS IDENTITY IS CREATED INSIDE THE CLUSTER [with master acces]
-# For GitHub IAM User --> Since Bootstraped, this User has both Authentication and authorization
-                          # It can talk the EKs API and has RBAC permissions in K8
-                          # IN THIS CASE: The CreateCluster API call was made by Github Actions
-                            # Therefore according to the EKS , the IAM session of GitHub Action was the Cluster Creator
-                            # Hence Github Action IAM User is getting bootstrapped and having RBAC Rights.
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
+      - name: Ensure IAM Policy for ALB Controller
+        id: ensure_policy
+        run: |
+          set -euo pipefail
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
 
-# For the Local IAM User --> EKs allows authentication via the IAM [Hence, we did not get issue while updating kubeconfig]
-                            # Till here aws knew that we are the same IAM user, AUTHENTICATED , 
-                                        # because AWS IAM [when doing aws sts get-caller-identity] that it is the same GitHub Action IAM User
-                                        # though it was the local IAM User.
-                            # PROBLEM IS HERE : This user is not mapped in the aws auth configMap . IN SHORT ITS EMPTY.
-                            
-                            
-# Means,Bootstraping[concept tried earlier] --> AUTOMATICALLY GIVES THE CLUSTER CREATOR IAM ENTITY RBAC RIGHTs
-        # Therefore the IAM User [whoever created the Cluster] was never added to the aws-auth ConfigMap
-        # So authentication was passing from the AWS side
-        # Authorization was failing from the RBAC side because IAM user was never added to the aws-auth ConfigMap
+          # Check if the policy already exists
+          EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
+          if [ -z "$EXISTING_POLICY_ARN" ]; then
+            echo "Policy $POLICY_NAME not found. Creating it..."
+            curl -sSfL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
+          else
+            echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
+            POLICY_ARN="$EXISTING_POLICY_ARN"
+          fi
+          echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
+#-------------------------------------------------------------------------------------------------------------------------------
 
-#---------------------------------------------------------------------------------------------------------------------------------------------
-# SECTION : To add the IAM User to the aws-auth ConfigMap, 
-# --------------------> granting it admin privileges.
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 3. Install eksctl and setup IRSA for ALB Controller
+      - name: Install eksctl
+        run: |
+          curl -sSfL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" -o /tmp/eksctl.tgz
+          sudo tar -xzf /tmp/eksctl.tgz -C /usr/local/bin
+          eksctl version
 
-#  Using here "kubernetes_config_map_v1" to ensure that it safely merges the changes without overwriting the entire ConfigMap
-resource "kubernetes_config_map_v1" "aws_auth" {
-  metadata {
-    name      = "aws-auth"
-    namespace = "kube-system"
-  }
+      - name: Associate IAM OIDC Provider with cluster (idempotent)
+        run: |
+          eksctl utils associate-iam-oidc-provider \
+            --cluster ${{ github.event.inputs.cluster_name }} \
+            --region ${{ github.event.inputs.aws_region }} \
+            --approve
 
-  data = {
-  # creates a mapping in the aws-auth ConfigMap that tells Kubernetes 
-  #how to handle requests from the EC2 Ins (worker nodes)
+      - name: Create/Update IRSA Role and Service Account for ALB Controller
+        env:
+          POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
+        run: |
+          set -euo pipefail
+          ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
 
- 
-    "mapRoles" = yamlencode([
-      {
-        rolearn  = module.eks.node_role_arn
-        username = "system:node:{{EC2PrivateDNSName}}"
-        groups = [
-          "system:bootstrappers",
-          "system:nodes",
-        ]
-      },
-    ])
+          eksctl create iamserviceaccount \
+            --cluster ${{ github.event.inputs.cluster_name }} \
+            --region ${{ github.event.inputs.aws_region }} \
+            --namespace kube-system \
+            --name aws-load-balancer-controller \
+            --role-name "$ROLE_NAME" \
+            --attach-policy-arn "$POLICY_ARN" \
+            --approve \
+            --override-existing-serviceaccounts
+          echo "IRSA service account ensured: kube-system/aws-load-balancer-controller"
+#-------------------------------------------------------------------------------------------------------------------------------
 
-    # admin user, giving  access to the IAM user.
-    "mapUsers" = yamlencode([
-      {
-        # MAIN LOGIC: Taking the IAM User ARN on the flow and splitting the username from it after "/"
-        userarn  = var.cluster_creator_arn
-        username = split("/", var.cluster_creator_arn)[1]
-        groups   = ["system:masters"]
-      },
-    ])
-  }
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 4. Install AWS Load Balancer Controller with proper wait conditions
+      - name: Install AWS Load Balancer Controller
+        run: |
+          set -euo pipefail
+          VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "Found VPC ID: $VPC_ID"
+          
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
 
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set vpcId=$VPC_ID \
+            --set region=${{ github.event.inputs.aws_region }} \
+            --wait --timeout 10m
 
-# Making sure that the eks cluster is created
-  depends_on = [module.eks]
-}
+          echo "Waiting for controller Deployment to be Available..."
+          kubectl -n kube-system rollout status deploy/aws-load-balancer-controller --timeout=5m
+
+          echo "Waiting for webhook Service endpoints to be populated..."
+          for i in $(seq 1 60); do
+            EP=$(kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
+            if [ -n "${EP:-}" ]; then
+              echo "Webhook endpoints ready: $EP"
+              break
+            fi
+            echo "No webhook endpoints yet; sleeping 5s... ($i/60)"
+            sleep 5
+          done
+
+          echo "---> Checking webhook service and endpoints:"
+          kubectl -n kube-system get svc,endpoints aws-load-balancer-webhook-service || true
+          
+          echo "---> Checking kube-system pods after ALB controller install:"
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
+          
+          echo "---> Controller logs (last 50 lines):"
+          kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50 || true
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 5. Install ArgoCD with retry logic
+      - name: Install ArgoCD
+        run: |
+          set -e
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+
+          install_argocd() {
+            helm upgrade --install argocd argo/argo-cd \
+              --namespace argocd \
+              --create-namespace \
+              --set server.service.type=ClusterIP \
+              --set server.extraArgs={--insecure}
+          }
+
+          # Try to install ArgoCD, retry once if webhook race occurs
+          if ! install_argocd; then
+            echo "First attempt failed. Re-checking webhook endpoints and retrying..."
+            kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o yaml || true
+            sleep 10
+            install_argocd
+          fi
+
+          echo "Waiting 30 seconds for ArgoCD pods to start..."
+          sleep 30
+          echo "---> ArgoCD pods status:"
+          kubectl get pods -n argocd
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 6. Bootstrap ArgoCD Applications
+      - name: Apply Argo CD Application Manifests
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+          kubectl apply -f argocd/
+          sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 7. Get the ALB DNS Name
+      - name: Get Ingress URL
+        run: |
+          echo "Waiting 60 seconds for Ingress to get an address..."
+          sleep 60
+          kubectl get ingress shared-main-ingress -n argocd -o wide || true
+          sleep 5
+          echo "Describe Ingress:"
+          kubectl describe ingress shared-main-ingress -n argocd || true
+          sleep 5
+          echo "=========================================================================="
+          echo "Your ArgoCD URL will be available in a few minutes at:"
+          kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true
+          echo ""
+          echo "=========================================================================="
+
+          echo "ArgoCD initial admin password:"
+          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d || true
+          echo ""
+#-------------------------------------------------------------------------------------------------------------------------------
