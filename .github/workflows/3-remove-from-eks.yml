@@ -34,33 +34,29 @@ jobs:
 
 #--------------------------- 1. Update kube-config-----------------------------------------
 
-
-
-
       - name: Update Kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
           echo "CORRECT:---> Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
 #-------------------------------------------------------------------------------------------------------------------------------
 
+#--------------------------- 2. Delete Argo CD Applications to trigger cleanup ---------------------------
 
-
-
-# --------------------------2. Delete the ArgoCD Ingress to trigger ALB deletion------------------------------
-# Checking if the ALB is deleted:
-    # If deleted then, OUTPUT:"CORRECT:------> Success! The ALB is no longer found in AWS and is confirmed deleted."
-    #If not deleted then, It will keep looping for 5 minutes , updating every 15 seconds
-    # ALTERNATIVE SITUATION: There can be a possibility that the ALB is already deleted , then
-        # OUTPUT : "------XXXX--- Could not find an ALB hostname from the Ingress. It might have been deleted already ---XXXX----------------"
-
-
-      - name: Delete Ingress and Wait for ALB Deletion
+      - name: Delete Argo CD Applications
         run: |
-          # Fetching ALB HOSTNAME 
-          ALB_HOSTNAME=$(kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          echo "****-------------------Deleting Argo CD Application manifests...--------------****"
+          # This tells Argo CD to prune all the resources it manages (Ingress, Deployment, Service)
+          kubectl delete -f argocd/ --ignore-not-found=true
+          echo "Waiting 30 seconds for Argo CD to begin pruning resources..."
+          sleep 30
+#-------------------------------------------------------------------------------------------------------------------------------
 
-          echo "****-------------------Deleting ArgoCD Ingress to trigger ALB deletion--------------****"
-          kubectl delete -f kubernetes-manifests/argocd-ingress.yml -n argocd --ignore-not-found=true
+#--------------------------- 3. Wait for the ALB to be Deleted ---------------------------
+
+      - name: Wait for ALB Deletion
+        run: |
+          # Fetching ALB HOSTNAME from the shared ingress
+          ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
 
           if [ -z "$ALB_HOSTNAME" ]; then
             echo "------XXXX--- Could not find an ALB hostname from the Ingress. It might have been deleted already ---XXXX----------------"
@@ -72,12 +68,11 @@ jobs:
             TIMEOUT=300 # 5-minute timeout
 
             while [ $SECONDS -lt $TIMEOUT ]; do
-              # Check if an ALB with the specific DNS name still exists
               ALB_ARN=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?DNSName=='$ALB_HOSTNAME'].LoadBalancerArn" --output text)
               
               if [ -z "$ALB_ARN" ]; then
                 echo "CORRECT:------> Success! The ALB is no longer found in AWS and is confirmed deleted."
-                break # Exit the loop successfully
+                break
               fi
               
               echo "****-------------------Waiting for ALB to be deleted... ($SECONDS/$TIMEOUT seconds)--------------****"
@@ -87,81 +82,57 @@ jobs:
 
             if [ $SECONDS -ge $TIMEOUT ]; then
               echo "ERROR: Timed out after 5 minutes waiting for ALB to be deleted."
-              exit 1
+              # We won't exit 1 here to allow the rest of the cleanup to proceed
             fi
           fi
 
-          echo "Sleeping for 60 seconds to make sure that the Target Group and SGs deleted"
+          echo "Sleeping for 60 seconds to allow for Target Group/SG deletion..."
           sleep 60
 #-------------------------------------------------------------------------------------------------------------------------------
 
+#----------------------------------------- 4. Uninstall Helm Charts ---------------------------------------------------------------------
 
-
-
-
-#----------------------------------------- 3. Uninstall ArgoCD ---------------------------------------------------------------------
-
-
-      - name: Uninstall ArgoCD
+      - name: Uninstall Helm Charts
         run: |
           echo "xxxx-------------- Uninstalling ArgoCD Helm chart----------------X"
-          helm uninstall argocd -n argocd || echo "ArgoCD not found, skipping."
-#-------------------------------------------------------------------------------------------------------------------------------
+          helm uninstall argocd -n argocd --wait || echo "ArgoCD not found, skipping."
 
-
-
-#--------------------------------------- 4. Uninstall AWS Load Balancer Controller -----------------------------------------------
-
-
-
-      - name: Uninstall AWS Load Balancer Controller
-        run: |
           echo "xxxx---------Uninstalling AWS Load Balancer Controller Helm chart.----------xxxx"
-          helm uninstall aws-load-balancer-controller -n kube-system || echo "AWS Load Balancer Controller not found, skipping."
+          helm uninstall aws-load-balancer-controller -n kube-system --wait || echo "AWS Load Balancer Controller not found, skipping."
 #-------------------------------------------------------------------------------------------------------------------------------
 
+#-------------------------------------  5. Detach and Delete IAM Policy and Role ----------------------------------------
 
-
-
-#-------------------------------------  5. Detach and Delete IAM Policy ----------------------------------------
-# NOTE: We now delete the policy because it is custom-created by the deploy workflow
-# and is specific to this application stack.
-
-      - name: Detach and Delete IAM Policy for ALB Controller
+      - name: Destroy IAM Policy and Role for ALB Controller
         run: |
-          echo "---------> Starting detachment and deletion of IAM policy..."
-          POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='AWSLoadBalancerControllerIAMPolicy'].Arn" --output text)
+          echo "---------> Starting cleanup of IAM Role and Policy..."
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          ROLE_NAME=${{ github.event.inputs.cluster_name }}-ALBControllerRole
+
+          POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
           if [ -z "$POLICY_ARN" ]; then
-            echo "IAM Policy 'AWSLoadBalancerControllerIAMPolicy' not found. Skipping cleanup."
-            exit 0
-          fi
-
-          echo "Found policy to clean up: $POLICY_ARN"
-          
-          NODE_GROUP_NAME=$(aws eks list-nodegroups --cluster-name ${{ github.event.inputs.cluster_name }} --query "nodegroups[0]" --output text)
-          if [ -z "$NODE_GROUP_NAME" ]; then
-            echo "No node groups found in cluster. Skipping detachment."
+            echo "IAM Policy '$POLICY_NAME' not found. Skipping cleanup."
           else
-            NODE_ROLE_ARN=$(aws eks describe-nodegroup --cluster-name ${{ github.event.inputs.cluster_name }} --nodegroup-name "$NODE_GROUP_NAME" --query "nodegroup.nodeRole" --output text)
-            NODE_ROLE_NAME=$(basename $NODE_ROLE_ARN)
+            echo "Found Policy ARN: $POLICY_ARN"
+            echo "Detaching policy $POLICY_ARN from role $ROLE_NAME..."
+            aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn $POLICY_ARN || echo "Failed to detach policy, it might have already been detached."
+            sleep 5
 
-            echo "Detaching policy $POLICY_ARN from role $NODE_ROLE_NAME"
-            aws iam detach-role-policy --role-name $NODE_ROLE_NAME --policy-arn $POLICY_ARN || echo "Failed to detach policy, it might have already been detached."
-            sleep 5 # Allow a moment for the detachment to propagate
+            echo "Deleting policy $POLICY_ARN..."
+            aws iam delete-policy --policy-arn $POLICY_ARN || echo "Failed to delete policy, it might have been already deleted."
           fi
           
-          echo "Deleting policy $POLICY_ARN"
-          aws iam delete-policy --policy-arn $POLICY_ARN || echo "Failed to delete policy, it might have been already deleted."
-
-          echo "COMPLETED:-------> Policy cleanup process complete."
+          echo "Deleting role $ROLE_NAME..."
+          aws iam delete-role --role-name $ROLE_NAME || echo "Failed to delete role, it might have been already deleted."
+          
+          echo "COMPLETED:-------> IAM cleanup process complete."
 #-------------------------------------------------------------------------------------------------------------------------------
-
 
       - name: Completion Step
         run: |
           echo "=========================================================================================="
-          echo "COMPLETED:-->>EKS cluster cleanup is complete."
-          echo "You can now safely run the Terraform workflow to destroy the remaining infrastructure."
+          echo "COMPLETED:-->>EKS application cleanup is complete."
+          echo "You can now safely run the Terraform workflow to destroy the remaining EKS infrastructure."
           echo "=========================================================================================="
 #-------------------------------------------------------------------------------------------------------------------------------
