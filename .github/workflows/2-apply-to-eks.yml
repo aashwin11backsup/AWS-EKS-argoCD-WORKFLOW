@@ -137,21 +137,22 @@ jobs:
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 6. Get the ALB DNS Name
-      - name: Get ArgoCD Ingress URL
+      - name: Get Ingress URL
         run: |
           echo "---------Waiting for Ingress to get an address... 30 SECONDS SLEEP------"
           sleep 30
-          kubectl get ingress argocd-server-ingress -n argocd -o wide
+          # --- FIX: Use the new ingress name 'shared-main-ingress' ---
+          kubectl get ingress shared-main-ingress -n argocd -o wide
           sleep 5
           echo " --->Describe Ingress:"
-          kubectl describe ingress argocd-server-ingress -n argocd
+          kubectl describe ingress shared-main-ingress -n argocd
           sleep 5
           echo "=========================================================================="
           echo "Your ArgoCD URL will be available in a few minutes at:"
-          kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
           echo ""
           echo "=========================================================================="
-
+          
           echo " --->ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
           echo ""
