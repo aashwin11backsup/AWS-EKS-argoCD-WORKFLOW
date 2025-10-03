@@ -1,12 +1,10 @@
 # .github/workflows/build-test-push.yml
 
-name: 'Build, Test, and Push Application'
+name: '4-Build, Test, and Push Application'
 
 on:
-  # This workflow triggers on any push to the 'https-check' branch
-  push:
-    branches:
-      - https-check
+  # This workflow is now triggered manually from the Actions tab
+  workflow_dispatch:
 
 jobs:
   # Job 1: Run unit tests to validate the application
@@ -129,8 +127,6 @@ jobs:
             echo "--> Pushed updated manifest to repository."
           fi
 
-
-
       # - name: Install Argo CD CLI
       #   run: |
       #     echo "--> Installing Argo CD CLI..."
@@ -143,6 +139,9 @@ jobs:
       #     echo "--> Logging into Argo CD server..."
       #     argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure
       #     echo "--> Argo CD login successful."
+      #   env:
+      #     ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      #     ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
       # - name: Sync Argo CD Application
       #   run: |
