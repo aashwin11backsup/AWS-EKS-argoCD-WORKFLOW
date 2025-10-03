@@ -11,18 +11,10 @@ on:
         description: 'EKS Cluster Name (e.g., staging-eks-demo)'
         required: true
         default: 'staging-eks-demo'
-      delete_argocd_crds:
-        description: 'Also delete Argo CD CRDs (true/false)'
-        required: false
-        default: 'true'
-      delete_oidc_provider:
-        description: 'Delete cluster OIDC provider (true/false)'
-        required: false
-        default: 'true'
 
 jobs:
   destroy-from-eks:
-    name: 'Destroy ALB, Apps, Helm, and IAM'
+    name: 'Destroy ALB Controller and ArgoCD'
     runs-on: ubuntu-latest
 
     permissions:
@@ -40,200 +32,304 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
-#--------------------------- 1. Update kubeconfig -----------------------------------------
+      - name: Verify AWS Authentication
+        run: |
+          echo "=========================================="
+          echo "Verifying AWS Authentication"
+          echo "=========================================="
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "---> Correct: Authenticated as Account: $ACCOUNT_ID"
+          echo "=========================================="
+
+      - name: Install eksctl
+        run: |
+          echo "=========================================="
+          echo "Installing eksctl"
+          echo "=========================================="
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          EKSCTL_VERSION=$(eksctl version)
+          echo "---> Correct: eksctl installed: $EKSCTL_VERSION"
+          echo "=========================================="
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 1. Connect to the EKS Cluster
       - name: Update Kubeconfig
         run: |
-          set -euo pipefail
+          echo "=========================================="
+          echo "Connecting to EKS Cluster"
+          echo "=========================================="
+          echo "Region: ${{ github.event.inputs.aws_region }}"
+          echo "Cluster: ${{ github.event.inputs.cluster_name }}"
+          
           aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
-          echo "Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
-#------------------------------------------------------------------------------------------------
+          echo "---> Correct: Kubeconfig updated"
+          
+          echo ""
+          echo "Checking cluster nodes:"
+          kubectl get nodes -o wide
+          
+          NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+          echo ""
+          echo "---> Correct: Found $NODE_COUNT node(s) in the cluster"
+          echo "=========================================="
+          sleep 3
+#-------------------------------------------------------------------------------------------------------------------------------
 
-#--------------------------- 2. Capture ALB hostname BEFORE deleting manifests -----------------
-      - name: Capture ALB Hostname (if Ingress exists)
-        id: capture_ing
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 2. Capture ALB hostname before deletion
+      - name: Capture ALB Hostname
+        id: capture_alb
         run: |
-          set -euo pipefail
-          # Try to read the ALB hostname now; if ingress is missing this will be blank.
-          HN=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-          echo "alb_hostname=$HN" >> "$GITHUB_OUTPUT"
-          echo "Captured ALB hostname: ${HN:-<none>}"
-#------------------------------------------------------------------------------------------------
-
-#--------------------------- 3. Delete the manifests we applied (triggers ALB deletion) -------
-      - name: Delete Argo CD Application Manifests
-        run: |
-          set -euo pipefail
-          echo "Deleting objects defined in argocd/ ..."
-          kubectl delete -f argocd/ --ignore-not-found=true || true
-          # Defensive: explicitly delete the ingress if it still exists
-          kubectl -n argocd delete ingress shared-main-ingress --ignore-not-found=true || true
-          echo "Waiting 20 seconds for controller to start ALB teardown ..."
-          sleep 20
-#------------------------------------------------------------------------------------------------
-
-#--------------------------- 4. Wait for the ALB to be deleted --------------------------------
-      - name: Wait for ALB Deletion
-        run: |
-          set -euo pipefail
-          ALB_HOSTNAME="${{ steps.capture_ing.outputs.alb_hostname }}"
-
-          # Fallback: discover by cluster tag if hostname unknown
-          if [ -z "${ALB_HOSTNAME:-}" ]; then
-            echo "No hostname captured; attempting tag-based discovery ..."
-            CLUSTER="${{ github.event.inputs.cluster_name }}"
-            for ARN in $(aws elbv2 describe-load-balancers --query 'LoadBalancers[].LoadBalancerArn' --output text 2>/dev/null || true); do
-              TAGS=$(aws elbv2 describe-tags --resource-arns "$ARN" --query 'TagDescriptions[0].Tags[].[Key,Value]' --output text | tr -s ' ' || true)
-              if echo "$TAGS" | grep -q "kubernetes.io/cluster/$CLUSTER=owned\|kubernetes.io/cluster/$CLUSTER=shared"; then
-                ALB_HOSTNAME=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ARN" --query 'LoadBalancers[0].DNSName' --output text || true)
-                echo "Discovered ALB for cluster: ${ALB_HOSTNAME:-<none>}"
-                break
-              fi
-            done
+          echo "=========================================="
+          echo "Capturing ALB Hostname"
+          echo "=========================================="
+          
+          ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          
+          if [ -n "$ALB_HOSTNAME" ]; then
+            echo "---> Correct: Found ALB hostname: $ALB_HOSTNAME"
+            echo "alb_hostname=$ALB_HOSTNAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "ALERT---> No ALB hostname found (may already be deleted)"
+            echo "alb_hostname=" >> "$GITHUB_OUTPUT"
           fi
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
 
-          if [ -z "${ALB_HOSTNAME:-}" ]; then
-            echo "No ALB hostname found. It may already be deleted. Skipping wait."
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 3. Delete ArgoCD Ingress and manifests
+      - name: Delete ArgoCD Ingress
+        run: |
+          echo "=========================================="
+          echo "Deleting ArgoCD Ingress"
+          echo "=========================================="
+          
+          echo "Deleting objects from argocd/ directory..."
+          kubectl delete -f argocd/ --ignore-not-found=true || true
+          
+          echo ""
+          echo "Explicitly deleting ingress if it exists..."
+          kubectl delete ingress shared-main-ingress -n argocd --ignore-not-found=true || true
+          
+          echo ""
+          echo "---> Correct: Ingress deletion initiated"
+          echo "Waiting 30 seconds for ALB Controller to start teardown..."
+          sleep 30
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 4. Wait for ALB to be deleted
+      - name: Wait for ALB Deletion
+        env:
+          ALB_HOSTNAME: ${{ steps.capture_alb.outputs.alb_hostname }}
+        run: |
+          echo "=========================================="
+          echo "Waiting for ALB Deletion"
+          echo "=========================================="
+          
+          if [ -z "$ALB_HOSTNAME" ]; then
+            echo "ALERT---> No ALB hostname captured, skipping wait"
+            echo "=========================================="
             exit 0
           fi
-
+          
           echo "Polling for ALB deletion: $ALB_HOSTNAME"
-          TIMEOUT=900  # 15 minutes
-          S=0
-          while [ $S -lt $TIMEOUT ]; do
-            FOUND=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?DNSName=='$ALB_HOSTNAME'].LoadBalancerArn" --output text 2>/dev/null || true)
-            if [ -z "$FOUND" ] || [ "$FOUND" = "None" ]; then
-              echo "ALB not found; deletion confirmed."
+          echo "Maximum wait time: 2 minutes"
+          
+          TIMEOUT=120
+          ELAPSED=0
+          
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            # Check if ALB still exists
+            ALB_EXISTS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?DNSName=='$ALB_HOSTNAME'].LoadBalancerArn" --output text 2>/dev/null || echo "")
+            
+            if [ -z "$ALB_EXISTS" ] || [ "$ALB_EXISTS" == "None" ]; then
+              echo "---> Correct: ALB has been deleted"
               break
             fi
-            echo "Waiting for ALB to be deleted ... ($S/$TIMEOUT sec)"
+            
+            echo "Waiting for ALB to be deleted... ($ELAPSED/$TIMEOUT seconds)"
             sleep 20
-            S=$((S+20))
+            ELAPSED=$((ELAPSED + 20))
           done
-
-          if [ $S -ge $TIMEOUT ]; then
-            echo "Timed out waiting for ALB deletion; continuing."
+          
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "ALERT---> Timeout reached waiting for ALB deletion"
+            echo "Continuing with cleanup anyway..."
           fi
+          
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
 
-          # Allow time for Target Groups and Security Groups to be reaped
-          sleep 45
-#------------------------------------------------------------------------------------------------
-
-#--------------------------- 5. Optional: best-effort prune leftover TG/SG by cluster tag -----
-      - name: Best-effort prune leftover Target Groups and Security Groups
-        continue-on-error: true
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 5. Wait for Target Groups to be deleted
+      - name: Wait for Target Groups Cleanup
         run: |
-          set -euo pipefail
-          CLUSTER="${{ github.event.inputs.cluster_name }}"
+          echo "=========================================="
+          echo "Waiting for Target Groups to be cleaned up"
+          echo "=========================================="
+          echo "Waiting 60 seconds for AWS to clean up target groups..."
+          sleep 30
+          echo "---> Correct: Target group cleanup wait complete"
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
 
-          echo "Scanning for leftover Target Groups tagged with cluster $CLUSTER ..."
-          # Delete TGs tagged to this cluster that are not in use
-          for TGARN in $(aws elbv2 describe-target-groups --query 'TargetGroups[].TargetGroupArn' --output text 2>/dev/null || true); do
-            TAGS=$(aws elbv2 describe-tags --resource-arns "$TGARN" --query 'TagDescriptions[0].Tags[].[Key,Value]' --output text | tr -s ' ' || true)
-            if echo "$TAGS" | grep -q "kubernetes.io/cluster/$CLUSTER=owned\|kubernetes.io/cluster/$CLUSTER=shared"; then
-              INUSE=$(aws elbv2 describe-target-groups --target-group-arns "$TGARN" --query 'TargetGroups[0].LoadBalancerArns' --output text 2>/dev/null || true)
-              if [ -z "$INUSE" ] || [ "$INUSE" = "None" ]; then
-                echo "Deleting leftover target group: $TGARN"
-                aws elbv2 delete-target-group --target-group-arn "$TGARN" || true
-              fi
-            fi
-          done
-
-          echo "Scanning for leftover Security Groups tagged with cluster $CLUSTER ..."
-          for SG in $(aws ec2 describe-security-groups --filters Name=tag-key,Values=kubernetes.io/cluster/$CLUSTER --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true); do
-            echo "Attempting to delete SG: $SG"
-            # Remove all ingress/egress rules first
-            aws ec2 revoke-security-group-egress --group-id "$SG" --ip-permissions file:///dev/stdin <<<'[]' || true
-            aws ec2 revoke-security-group-ingress --group-id "$SG" --ip-permissions file:///dev/stdin <<<'[]' || true
-            aws ec2 delete-security-group --group-id "$SG" || true
-          done
-#------------------------------------------------------------------------------------------------
-
-#--------------------------- 6. Uninstall Helm releases (apps and controller) -----------------
-      - name: Uninstall Helm releases
-        continue-on-error: true
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 6. Uninstall ArgoCD Helm Release
+      - name: Uninstall ArgoCD
         run: |
-          set -euo pipefail
-          echo "Uninstalling Argo CD Helm release (argocd namespace) ..."
-          helm uninstall argocd -n argocd --wait || true
+          echo "=========================================="
+          echo "Uninstalling ArgoCD Helm Release"
+          echo "=========================================="
+          
+          if helm list -n argocd | grep -q argocd; then
+            echo "Found ArgoCD Helm release, uninstalling..."
+            helm uninstall argocd -n argocd --wait || true
+            echo "---> Correct: ArgoCD uninstalled"
+          else
+            echo "ALERT---> ArgoCD Helm release not found"
+          fi
+          
+          echo ""
+          echo "Deleting argocd namespace..."
+          kubectl delete namespace argocd --ignore-not-found=true --timeout=120s || true
+          echo "---> Correct: ArgoCD namespace deleted"
+          echo "=========================================="
+          sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-          echo "Uninstalling AWS Load Balancer Controller (kube-system namespace) ..."
-          helm uninstall aws-load-balancer-controller -n kube-system --wait || true
-#------------------------------------------------------------------------------------------------
-
-#--------------------------- 7. Optionally delete Argo CD CRDs --------------------------------
-      - name: Delete Argo CD CRDs (optional)
-        if: ${{ github.event.inputs.delete_argocd_crds == 'true' }}
-        continue-on-error: true
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 7. Uninstall AWS Load Balancer Controller
+      - name: Uninstall AWS Load Balancer Controller
         run: |
-          set -euo pipefail
-          echo "Deleting Argo CD CRDs ..."
-          kubectl delete crd applications.argoproj.io appprojects.argoproj.io applicationsets.argoproj.io --ignore-not-found=true
-#------------------------------------------------------------------------------------------------
+          echo "=========================================="
+          echo "Uninstalling AWS Load Balancer Controller"
+          echo "=========================================="
+          
+          if helm list -n kube-system | grep -q aws-load-balancer-controller; then
+            echo "Found ALB Controller Helm release, uninstalling..."
+            helm uninstall aws-load-balancer-controller -n kube-system --wait || true
+            echo "---> Correct: ALB Controller uninstalled"
+          else
+            echo "ALERT---> ALB Controller Helm release not found"
+          fi
+          echo "=========================================="
+          sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-#--------------------------- 8. Delete IRSA Service Account -----------------------------------
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 8. Delete Kubernetes Service Account
+      - name: Delete Kubernetes Service Account
+        run: |
+          echo "=========================================="
+          echo "Deleting Kubernetes Service Account"
+          echo "=========================================="
+          
+          kubectl delete serviceaccount aws-load-balancer-controller -n kube-system --ignore-not-found=true || true
+          echo "---> Correct: Service account deleted"
+          echo "=========================================="
+          sleep 3
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 9. Delete IRSA using eksctl
       - name: Delete IRSA Service Account
-        continue-on-error: true
         run: |
-          set -euo pipefail
-          echo "Deleting kube-system/aws-load-balancer-controller service account ..."
-          kubectl -n kube-system delete serviceaccount aws-load-balancer-controller --ignore-not-found=true
-#------------------------------------------------------------------------------------------------
+          echo "=========================================="
+          echo "Deleting IRSA Service Account"
+          echo "=========================================="
+          
+          eksctl delete iamserviceaccount \
+            --cluster=${{ github.event.inputs.cluster_name }} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --region=${{ github.event.inputs.aws_region }} || echo "ALERT---> IRSA service account not found (may already be deleted)"
+          
+          echo "---> Correct: IRSA deletion complete"
+          echo "=========================================="
+          sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-#--------------------------- 9. Detach and Delete IAM Role and Policy -------------------------
-      - name: Delete IAM Role and Policy for ALB Controller
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 10. Delete IAM Role
+      - name: Delete IAM Role
         run: |
-          set -euo pipefail
-          echo "Starting IAM cleanup for ALB Controller ..."
-          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          echo "=========================================="
+          echo "Deleting IAM Role"
+          echo "=========================================="
+          
           ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
-
-          POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text || true)
-
-          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-            echo "Found role: $ROLE_NAME"
-            # Detach all attached policies
-            for P in $(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'AttachedPolicies[].PolicyArn' --output text || true); do
-              echo "Detaching $P from $ROLE_NAME"
-              aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn "$P" || true
+          echo "IAM Role Name: $ROLE_NAME"
+          
+          if aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+            echo "Found IAM role, deleting..."
+            
+            # Detach all policies
+            echo "Detaching policies from role..."
+            ATTACHED_POLICIES=$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'AttachedPolicies[].PolicyArn' --output text)
+            
+            for POLICY_ARN in $ATTACHED_POLICIES; do
+              echo "  Detaching policy: $POLICY_ARN"
+              aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn "$POLICY_ARN" || true
             done
-            # Delete role
-            echo "Deleting role $ROLE_NAME ..."
+            
+            # Delete the role
+            echo "Deleting role..."
             aws iam delete-role --role-name "$ROLE_NAME" || true
+            echo "---> Correct: IAM role deleted"
           else
-            echo "Role $ROLE_NAME not found, skipping."
+            echo "ALERT---> IAM role not found (may already be deleted)"
           fi
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
 
-          if [ -n "${POLICY_ARN:-}" ] && [ "$POLICY_ARN" != "None" ]; then
-            echo "Deleting policy $POLICY_ARN ..."
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 11. Delete IAM Policy
+      - name: Delete IAM Policy
+        run: |
+          echo "=========================================="
+          echo "Deleting IAM Policy"
+          echo "=========================================="
+          
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          echo "Policy Name: $POLICY_NAME"
+          
+          POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
+          
+          if [ -n "$POLICY_ARN" ] && [ "$POLICY_ARN" != "None" ]; then
+            echo "Found IAM policy: $POLICY_ARN"
+            echo "Deleting policy..."
             aws iam delete-policy --policy-arn "$POLICY_ARN" || true
+            echo "---> Correct: IAM policy deleted"
           else
-            echo "Policy $POLICY_NAME not found, skipping."
+            echo "ALERT---> IAM policy not found (may already be deleted)"
           fi
-#------------------------------------------------------------------------------------------------
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
 
-#--------------------------- 10. Optional: delete cluster OIDC provider -----------------------
-      - name: Delete OIDC Provider (optional)
-        if: ${{ github.event.inputs.delete_oidc_provider == 'true' }}
-        continue-on-error: true
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 12. Cleanup Complete
+      - name: Cleanup Complete
         run: |
-          set -euo pipefail
-          CLUSTER="${{ github.event.inputs.cluster_name }}"
-          REGION="${{ github.event.inputs.aws_region }}"
-          echo "Attempting to delete the IAM OIDC provider for cluster $CLUSTER (optional) ..."
-          ISSUER=$(aws eks describe-cluster --name "$CLUSTER" --region "$REGION" --query 'cluster.identity.oidc.issuer' --output text 2>/dev/null || true)
-          if [ -n "$ISSUER" ] && [ "$ISSUER" != "None" ]; then
-            OIDC_ID=$(echo "$ISSUER" | awk -F'/' '{print $NF}')
-            ARN="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):oidc-provider/oidc.eks.${REGION}.amazonaws.com/id/${OIDC_ID}"
-            echo "Deleting IAM OIDC provider: $ARN"
-            aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "$ARN" || true
-          else
-            echo "No OIDC issuer discovered; skipping."
-          fi
-#------------------------------------------------------------------------------------------------
-
-      - name: Completion
-        run: |
-          echo "=========================================================================================="
-          echo "Cleanup complete. The Ingress and ALB are gone, Helm releases removed, and IAM/IRSA cleaned."
-          echo "You can now safely run Terraform destroy on the underlying EKS/VPC stack."
-          echo "=========================================================================================="
+          echo "=========================================="
+          echo "=========================================="
+          echo "CLEANUP COMPLETE"
+          echo "=========================================="
+          echo ""
+          echo "The following resources have been deleted:"
+          echo "  - ArgoCD Ingress"
+          echo "  - Application Load Balancer"
+          echo "  - Target Groups"
+          echo "  - ArgoCD Helm Release"
+          echo "  - AWS Load Balancer Controller Helm Release"
+          echo "  - Kubernetes Service Account"
+          echo "  - IAM Service Account (IRSA)"
+          echo "  - IAM Role"
+          echo "  - IAM Policy"
+          echo ""
+          echo "You can now safely run 'terraform destroy' to remove the EKS cluster and VPC."
+          echo "=========================================="
+          echo "=========================================="
+#-------------------------------------------------------------------------------------------------------------------------------
