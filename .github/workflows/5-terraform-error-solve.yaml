@@ -39,12 +39,14 @@ jobs:
         with:
           terraform_version: 1.6.0 # Use the same version as your other workflows
 
+      - name: List files in the repository
+        run: ls -R
+
       - name: Terraform Init
-        id: init
         run: terraform init
-        working-directory: ${{ github.event.inputs.tf_directory }}
+        working-directory: ./terraform
 
       - name: Force Unlock
         id: unlock
         run: terraform force-unlock ${{ github.event.inputs.lock_id }}
-        working-directory: ${{ github.event.inputs.tf_directory }}
+        working-directory: ./terraform
