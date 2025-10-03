@@ -1,0 +1,157 @@
+name: '4-Build, Test, and Push Application'
+
+
+on:
+  # This workflow is now triggered manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'The branch to build and deploy from'
+        required: true
+        default: 'https-check'
+
+jobs:
+  # Job 1: Run unit tests to validate the application
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    env:
+      APIHOST: ${{ secrets.APIHOST }}
+      APIKEY: ${{ secrets.APIKEY }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # This tells the checkout action to use the branch specified in the manual trigger
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          echo "--> Installing Python dependencies from requirements.txt..."
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "--> Dependencies installed."
+      
+      - name: Run Tests
+        run: |
+          echo "--> Running unit tests..."
+          python -m unittest discover -s tests
+          echo "--> Tests passed successfully!"
+
+  # Job 2: Build and push the Docker image to ECR
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    needs: test # This ensures the test job must pass first
+    outputs:
+      sha: ${{ steps.short-sha.outputs.sha }} # Output the short SHA for the next job
+    env:
+      ECR_REPOSITORY: currency_converter_image
+      AWS_REGION: us-east-1 # Change this if your ECR repo is in a different region
+      
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Get short Git commit SHA
+        id: short-sha
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.short-sha.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 3: NEW - Update Kubernetes manifest and trigger Argo CD sync
+  update-deployment:
+    name: Update K8s Manifest & Sync Argo CD
+    runs-on: ubuntu-latest
+    needs: build-and-push # This job runs only after the image is pushed
+    env:
+      ECR_IMAGE: 124355660184.dkr.ecr.us-east-1.amazonaws.com/currency_converter_image
+      DEPLOYMENT_FILE: k8s/base/deployment.yaml
+      ARGOCD_APP_NAME: currencyconverter-production # Change if your app name is different
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # A personal access token is required to push the commit back to the repo
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure Git
+        run: |
+          echo "--> Configuring Git user..."
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Update Kubernetes Deployment File
+        run: |
+          IMAGE_TAG=${{ needs.build-and-push.outputs.sha }}
+          echo "--> New image tag is: $IMAGE_TAG"
+          
+          echo "--> Pulling latest changes from https-check branch..."
+          git pull origin https-check
+          
+          echo "--> Updating image in deployment file: ${{ env.DEPLOYMENT_FILE }}"
+          # Use sed to replace the image tag in the deployment file
+          sed -i 's|image: ${{ env.ECR_IMAGE }}:.*|image: ${{ env.ECR_IMAGE }}:'"$IMAGE_TAG"'|' ${{ env.DEPLOYMENT_FILE }}
+          
+          echo "--> Committing and pushing the updated deployment file..."
+          git add ${{ env.DEPLOYMENT_FILE }}
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "--> No changes to commit. Manifest is already up to date."
+          else
+            git commit -m "Update image version to $IMAGE_TAG"
+            git push origin https-check
+            echo "--> Pushed updated manifest to repository."
+          fi
+
+      # - name: Install Argo CD CLI
+      #   run: |
+      #     echo "--> Installing Argo CD CLI..."
+      #     curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+      #     chmod +x /usr/local/bin/argocd
+      #     echo "--> Argo CD CLI installed."
+
+      # - name: Login to Argo CD
+      #   run: |
+      #     echo "--> Logging into Argo CD server..."
+      #     argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure
+      #     echo "--> Argo CD login successful."
+      #   env:
+      #     ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      #     ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+
+      # - name: Sync Argo CD Application
+      #   run: |
+      #     echo "--> Triggering Argo CD sync for application: ${{ env.ARGOCD_APP_NAME }}"
+      #     argocd app sync ${{ env.ARGOCD_APP_NAME }}
+      #     echo "--> ✅ Argo CD sync triggered successfully!"
