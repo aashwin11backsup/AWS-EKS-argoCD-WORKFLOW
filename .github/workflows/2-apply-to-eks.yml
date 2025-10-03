@@ -102,7 +102,7 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install AWS Load Balancer Controller with proper wait conditions
+     # 4. Install AWS Load Balancer Controller with proper wait conditions
       - name: Install AWS Load Balancer Controller
         run: |
           set -euo pipefail
@@ -112,37 +112,40 @@ jobs:
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
 
+          # Install WITHOUT --wait first, then check manually
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set vpcId=$VPC_ID \
-            --set region=${{ github.event.inputs.aws_region }} \
-            --wait --timeout 10m
+            --set region=${{ github.event.inputs.aws_region }}
 
-          echo "Waiting for controller Deployment to be Available..."
-          kubectl -n kube-system rollout status deploy/aws-load-balancer-controller --timeout=5m
+          echo "Helm chart installed. Waiting for deployment to be ready..."
+          
+          # Wait for deployment with explicit timeout
+          kubectl -n kube-system wait --for=condition=available deployment/aws-load-balancer-controller --timeout=3m || {
+            echo "ERROR: Deployment failed to become available. Checking logs..."
+            kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller
+            kubectl -n kube-system describe deployment aws-load-balancer-controller
+            kubectl -n kube-system logs -l app.kubernetes.io/name=aws-load-balancer-controller --tail=100 || true
+            exit 1
+          }
 
           echo "Waiting for webhook Service endpoints to be populated..."
-          for i in $(seq 1 60); do
+          for i in $(seq 1 30); do
             EP=$(kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
             if [ -n "${EP:-}" ]; then
               echo "Webhook endpoints ready: $EP"
               break
             fi
-            echo "No webhook endpoints yet; sleeping 5s... ($i/60)"
+            echo "No webhook endpoints yet; sleeping 5s... ($i/30)"
             sleep 5
           done
 
-          echo "---> Checking webhook service and endpoints:"
-          kubectl -n kube-system get svc,endpoints aws-load-balancer-webhook-service || true
-          
-          echo "---> Checking kube-system pods after ALB controller install:"
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
-          
-          echo "---> Controller logs (last 50 lines):"
-          kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50 || true
+          echo "---> Final status check:"
+          kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
+          kubectl -n kube-system get svc,endpoints aws-load-balancer-webhook-service
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
