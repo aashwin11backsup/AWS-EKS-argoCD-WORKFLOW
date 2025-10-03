@@ -46,12 +46,14 @@ jobs:
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
-      # NOTE: We will NOT rely on the node role anymore. We will use IRSA for the controller.
+      # NOTE: NOT relying on the node role anymore. Using IRSA for the controller. 
+      # AS OBSERVED, Version:1.28 is no more supported and witht that the Node role is also not supported for ALB Creation.
       - name: Ensure IAM Policy for ALB Controller
         id: ensure_policy
         run: |
           set -euo pipefail
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+
           # Check if the policy already exists (checking all scopes)
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
           if [ -z "$EXISTING_POLICY_ARN" ]; then
@@ -63,6 +65,7 @@ jobs:
             POLICY_ARN="$EXISTING_POLICY_ARN"
           fi
           echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
+
           # Dynamically fetch node group name (kept for logging/backwards-compat only)
           NODE_GROUP_NAME=$(aws eks list-nodegroups --cluster-name ${{ github.event.inputs.cluster_name }} --query "nodegroups[0]" --output text || true)
           if [ -z "${NODE_GROUP_NAME:-}" ] || [ "$NODE_GROUP_NAME" = "None" ]; then
@@ -77,7 +80,7 @@ jobs:
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 2b. Ensure OIDC provider and create IRSA-bound service account for the controller
-      # We use eksctl to associate the cluster's OIDC and create the SA with the IAM role + annotation.
+      #Using eksctl to associate the cluster's OIDC and create the Service Account with the IAM role + annotation.
       - name: Install eksctl
         run: |
           curl -sSfL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" -o /tmp/eksctl.tgz
@@ -97,6 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
+
           # Create/Update the SA with IRSA role attached (idempotent with --approve and --override-existing-serviceaccounts)
           eksctl create iamserviceaccount \
             --cluster ${{ github.event.inputs.cluster_name }} \
@@ -111,19 +115,17 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 2c. (Optional) Validate VPC subnets are tagged for ALB auto-discovery
-      # Public subnets:  kubernetes.io/role/elb=1
-      # Private subnets: kubernetes.io/role/internal-elb=1
-      # And all subnets intended for the cluster must have: kubernetes.io/cluster/<cluster-name>=shared (or owned)
+      # 2c. (Only testing) Validating VPC subnets are tagged for ALB auto-discovery
       - name: Validate subnet tags for ALB
         continue-on-error: true
         run: |
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
           echo "Found VPC ID: $VPC_ID"
+          echo "----------------------------DUMMY ECHO FOR DEBUGGING------------------------------------------"
           echo "----> Subnet tag snapshot (for debugging):"
           aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
             --query 'Subnets[].{SubnetId:SubnetId,Tags:Tags}' --output table
-          echo "NOTE: Ensure your subnets for public ALBs have tag 'kubernetes.io/role/elb=1' and private/internal 'kubernetes.io/role/internal-elb=1',"
+          echo "Subnets for Public ALBs tagged --> 'kubernetes.io/role/elb=1' and private/internal --> 'kubernetes.io/role/internal-elb=1',"
           echo "and cluster tag 'kubernetes.io/cluster/${{ github.event.inputs.cluster_name }}=shared' or 'owned'."
 #-------------------------------------------------------------------------------------------------------------------------------
 
@@ -181,15 +183,16 @@ jobs:
           sleep 5
 
           # Ensure your Ingress uses the AWS ALB ingress class and has minimal required annotations.
-          # This patch is idempotent and will set spec.ingressClassName=alb if missing.
+
           set -e
           if kubectl get ingress shared-main-ingress -n argocd >/dev/null 2>&1; then
-            echo "Patching shared-main-ingress to use ingressClassName: alb and basic ALB annotations (idempotent)."
+            echo "Patching shared-main-ingress to use ingressClassName: alb and basic ALB annotations "
             kubectl -n argocd patch ingress shared-main-ingress --type=json -p='[
               {"op":"add","path":"/spec/ingressClassName","value":"alb"}
             ]' || true
 
-            # Add minimal recommended annotations if not present (scheme: internet-facing by default here; adjust if you want internal)
+            # Add overwrites to ensure the flow is not failing due to wrong code
+            
             kubectl -n argocd annotate ingress shared-main-ingress \
               kubernetes.io/ingress.class=alb \
               alb.ingress.kubernetes.io/scheme=internet-facing \
