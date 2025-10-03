@@ -91,7 +91,34 @@ jobs:
         run: |
           ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
 
-          # Create or update service account with IRSA (using --override flag)
+          # Delete the IAM role if it exists (to start fresh)
+          echo "Checking for existing IAM role..."
+          if aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+            echo "IAM role exists. Deleting it to start fresh..."
+            
+            # Detach all policies from the role
+            ATTACHED_POLICIES=$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'AttachedPolicies[].PolicyArn' --output text)
+            for POLICY in $ATTACHED_POLICIES; do
+              echo "Detaching policy: $POLICY"
+              aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn "$POLICY" || true
+            done
+            
+            # Delete the role
+            aws iam delete-role --role-name "$ROLE_NAME" || true
+            echo "IAM role deleted"
+            sleep 5
+          fi
+
+          # Delete the Kubernetes service account if it exists
+          echo "Checking for existing Kubernetes service account..."
+          if kubectl get sa aws-load-balancer-controller -n kube-system 2>/dev/null; then
+            echo "Service account exists in Kubernetes. Deleting it..."
+            kubectl delete sa aws-load-balancer-controller -n kube-system
+            sleep 5
+          fi
+
+          # Now create fresh service account with IRSA
+          echo "Creating fresh IRSA service account..."
           eksctl create iamserviceaccount \
             --cluster ${{ github.event.inputs.cluster_name }} \
             --region ${{ github.event.inputs.aws_region }} \
@@ -99,15 +126,15 @@ jobs:
             --name aws-load-balancer-controller \
             --role-name "$ROLE_NAME" \
             --attach-policy-arn "$POLICY_ARN" \
-            --approve \
-            --override-existing-serviceaccounts
+            --approve
 
-          echo "IRSA service account created/updated: kube-system/aws-load-balancer-controller"
+          echo "IRSA service account created: kube-system/aws-load-balancer-controller"
           
-          # Wait a moment for the service account to be ready
+          # Wait for the service account to be ready
           sleep 5
           
           # Verify the service account annotation
+          echo "Verifying service account:"
           kubectl get sa aws-load-balancer-controller -n kube-system -o yaml
 #-------------------------------------------------------------------------------------------------------------------------------
 
