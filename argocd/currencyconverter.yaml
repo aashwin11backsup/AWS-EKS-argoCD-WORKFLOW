@@ -1,17 +1,20 @@
+# argocd/currencyconverter.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: currencyconverter-production
+  # The name you see on the Argo CD card
+  name: currencyconverter-production 
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: 'https://github.com/aashwin11backsup/AWS-EKS-argoCD-WORKFLOW.git'
     targetRevision: https-check
-    path: k8s/overlays/production
+
+    path: k8s/overlays/development
   destination:
     server: 'https://kubernetes.default.svc'
-    namespace: default
+    namespace: argocd
   syncPolicy:
     automated:
       selfHeal: true
