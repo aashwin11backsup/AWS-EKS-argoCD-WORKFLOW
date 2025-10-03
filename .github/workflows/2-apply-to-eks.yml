@@ -45,6 +45,28 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
+      # 1b. NEW STEP: Grant CI/CD user admin access to the cluster
+      - name: Create IAM Identity Mapping for CI/CD
+        run: |
+          # Get the ARN of the IAM user/role running the workflow
+          CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          # The username in Kubernetes will be the session name, extract the user name from ARN
+          CALLER_USER=$(echo $CALLER_ARN | cut -d'/' -f2)
+          echo "INFO: Granting cluster-admin access to IAM identity: $CALLER_ARN"
+
+          # Use eksctl to add this identity to the aws-auth ConfigMap
+          eksctl create iamidentitymapping \
+            --cluster ${{ github.event.inputs.cluster_name }} \
+            --region ${{ github.event.inputs.aws_region }} \
+            --arn $CALLER_ARN \
+            --group system:masters \
+            --username $CALLER_USER
+          
+          echo "INFO: Successfully added identity mapping. Verifying access..."
+          kubectl auth can-i get pods -A
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
       # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
       # NOTE: NOT relying on the node role anymore. Using IRSA for the controller. 
       # AS OBSERVED, Version:1.28 is no more supported and witht that the Node role is also not supported for ALB Creation.
@@ -65,17 +87,6 @@ jobs:
             POLICY_ARN="$EXISTING_POLICY_ARN"
           fi
           echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
-
-          # Dynamically fetch node group name (kept for logging/backwards-compat only)
-          NODE_GROUP_NAME=$(aws eks list-nodegroups --cluster-name ${{ github.event.inputs.cluster_name }} --query "nodegroups[0]" --output text || true)
-          if [ -z "${NODE_GROUP_NAME:-}" ] || [ "$NODE_GROUP_NAME" = "None" ]; then
-            echo "XXXXXXX: --- No node groups found in cluster ${{ github.event.inputs.cluster_name }} (this may be Fargate or self-managed). Continuing with IRSA. -----XXXXX"
-          else
-            echo "Found node group: $NODE_GROUP_NAME"
-            NODE_ROLE=$(aws eks describe-nodegroup --cluster-name ${{ github.event.inputs.cluster_name }} --nodegroup-name "$NODE_GROUP_NAME" --query "nodegroup.nodeRole" --output text)
-            echo "INFO: Not attaching policy to node role (using IRSA). Node role is: $NODE_ROLE"
-          fi
-          sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
@@ -112,21 +123,6 @@ jobs:
             --approve \
             --override-existing-serviceaccounts
           echo "IRSA service account ensured: kube-system/aws-load-balancer-controller"
-#-------------------------------------------------------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------------------------------------------------------
-      # 2c. (Only testing) Validating VPC subnets are tagged for ALB auto-discovery
-      - name: Validate subnet tags for ALB
-        continue-on-error: true
-        run: |
-          VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
-          echo "Found VPC ID: $VPC_ID"
-          echo "----------------------------DUMMY ECHO FOR DEBUGGING------------------------------------------"
-          echo "----> Subnet tag snapshot (for debugging):"
-          aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" \
-            --query 'Subnets[].{SubnetId:SubnetId,Tags:Tags}' --output table
-          echo "Subnets for Public ALBs tagged --> 'kubernetes.io/role/elb=1' and private/internal --> 'kubernetes.io/role/internal-elb=1',"
-          echo "and cluster tag 'kubernetes.io/cluster/${{ github.event.inputs.cluster_name }}=shared' or 'owned'."
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
@@ -175,32 +171,12 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 5. Expose ArgoCD Server via Ingress
-      - name: Expose ArgoCD Server
+      # 5. Bootstrap ArgoCD Applications
+      - name: Apply Argo CD Application Manifests
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f argocd/
           sleep 5
-
-          # Ensure your Ingress uses the AWS ALB ingress class and has minimal required annotations.
-
-          set -e
-          if kubectl get ingress shared-main-ingress -n argocd >/dev/null 2>&1; then
-            echo "Patching shared-main-ingress to use ingressClassName: alb and basic ALB annotations "
-            kubectl -n argocd patch ingress shared-main-ingress --type=json -p='[
-              {"op":"add","path":"/spec/ingressClassName","value":"alb"}
-            ]' || true
-
-            # Add overwrites to ensure the flow is not failing due to wrong code
-            
-            kubectl -n argocd annotate ingress shared-main-ingress \
-              kubernetes.io/ingress.class=alb \
-              alb.ingress.kubernetes.io/scheme=internet-facing \
-              alb.ingress.kubernetes.io/target-type=ip \
-              --overwrite
-          else
-            echo "WARNING: Ingress shared-main-ingress not found in argocd namespace. Ensure argocd/ contains it."
-          fi
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
