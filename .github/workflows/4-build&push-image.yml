@@ -1,10 +1,13 @@
-# .github/workflows/build-test-push.yml
-
 name: '4-Build, Test, and Push Application'
 
 on:
   # This workflow is now triggered manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'The branch to build and deploy from'
+        required: true
+        default: 'https-check'
 
 jobs:
   # Job 1: Run unit tests to validate the application
@@ -17,6 +20,9 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # This tells the checkout action to use the branch specified in the manual trigger
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
