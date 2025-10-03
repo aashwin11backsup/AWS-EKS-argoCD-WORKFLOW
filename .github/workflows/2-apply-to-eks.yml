@@ -26,12 +26,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        run: |
-          echo "=========================================="
-          echo "🔐 Configuring AWS Credentials"
-          echo "=========================================="
-        
-      - uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -44,7 +39,7 @@ jobs:
           echo "=========================================="
           CALLER_IDENTITY=$(aws sts get-caller-identity)
           echo "Caller Identity: $CALLER_IDENTITY"
-          ACCOUNT_ID=$(echo $CALLER_IDENTITY | jq -r '.Account')
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "✅ Authenticated as Account: $ACCOUNT_ID"
           echo "=========================================="
 
@@ -119,7 +114,25 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 3. Create IAM Service Account for ALB Controller (IRSA)
+      # 3a. Associate OIDC Provider (Required for IRSA)
+      - name: Associate IAM OIDC Provider
+        run: |
+          echo "=========================================="
+          echo "🔗 Associating OIDC Provider with Cluster"
+          echo "=========================================="
+          
+          eksctl utils associate-iam-oidc-provider \
+            --cluster=${{ github.event.inputs.cluster_name }} \
+            --region=${{ github.event.inputs.aws_region }} \
+            --approve
+          
+          echo "✅ OIDC Provider associated"
+          echo "=========================================="
+          sleep 3
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 3b. Create IAM Service Account for ALB Controller (IRSA)
       - name: Create IAM Service Account for ALB Controller
         env:
           POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
@@ -193,7 +206,7 @@ jobs:
 
           echo ""
           echo "⏳ Waiting 60 seconds for controller to deploy..."
-          sleep 60
+          sleep 30
           
           echo ""
           echo "📊 Checking deployment status:"
@@ -203,7 +216,7 @@ jobs:
           echo "📦 Checking pods:"
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
           
-          POD_STATUS=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o jsonpath='{.items[0].status.phase}')
+          POD_STATUS=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
           echo ""
           if [ "$POD_STATUS" == "Running" ]; then
             echo "✅ ALB Controller pod is Running"
@@ -243,8 +256,8 @@ jobs:
           echo "📦 Checking ArgoCD pods:"
           kubectl get pods -n argocd -o wide
           
-          READY_PODS=$(kubectl get pods -n argocd --no-headers | grep -c "Running" || echo "0")
-          TOTAL_PODS=$(kubectl get pods -n argocd --no-headers | wc -l)
+          READY_PODS=$(kubectl get pods -n argocd --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l || echo "0")
+          TOTAL_PODS=$(kubectl get pods -n argocd --no-headers 2>/dev/null | wc -l || echo "0")
           echo ""
           echo "✅ $READY_PODS/$TOTAL_PODS pods are Running"
           echo "=========================================="
@@ -284,15 +297,15 @@ jobs:
           echo "This may take 2-3 minutes..."
           echo ""
           
-          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=120s || echo "⚠️  Timeout reached, checking status..."
+          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=60s || echo "⚠️  Timeout reached, checking status..."
 
           echo ""
           echo "📋 Ingress Details:"
-          kubectl describe ingress shared-main-ingress -n argocd
+          kubectl describe ingress shared-main-ingress -n argocd || true
           
           echo ""
           echo "=========================================="
-          ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+          ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
           
           if [ -n "$ALB_HOSTNAME" ]; then
             echo "✅ ArgoCD URL is ready:"
