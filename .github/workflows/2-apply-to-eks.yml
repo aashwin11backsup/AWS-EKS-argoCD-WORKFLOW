@@ -126,12 +126,13 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 3. Install AWS Load Balancer Controller
+      # 3. Install AWS Load Balancer Controller with proper wait conditions
       - name: Install AWS Load Balancer Controller
         run: |
+          set -euo pipefail
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
           echo "Found VPC ID: $VPC_ID"
-          sleep 3
+          
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
 
@@ -142,28 +143,57 @@ jobs:
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set vpcId=$VPC_ID \
-            --set region=${{ github.event.inputs.aws_region }}
+            --set region=${{ github.event.inputs.aws_region }} \
+            --wait --timeout 10m
 
-          echo "----------WAITING FOR 30 SECONDS FOR THE PODS TO RUN----------"
-          sleep 30
+          echo "Waiting for controller Deployment to be Available..."
+          kubectl -n kube-system rollout status deploy/aws-load-balancer-controller --timeout=5m
+
+          echo "Waiting for webhook Service endpoints to be populated..."
+          for i in $(seq 1 60); do
+            EP=$(kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
+            if [ -n "${EP:-}" ]; then
+              echo "Webhook endpoints ready: $EP"
+              break
+            fi
+            echo "No webhook endpoints yet; sleeping 5s... ($i/60)"
+            sleep 5
+          done
+
+          echo "---> Checking webhook service and endpoints:"
+          kubectl -n kube-system get svc,endpoints aws-load-balancer-webhook-service || true
+          
           echo "---> Checking kube-system pods after ALB controller install:"
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
+          
           echo "---> Controller logs (last 50 lines) for quick health check:"
           kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50 || true
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install ArgoCD with --insecure flag
+      # 4. Install ArgoCD with --insecure flag (with retry logic)
       - name: Install ArgoCD
         run: |
+          set -e
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
 
-          helm upgrade --install argocd argo/argo-cd \
-            --namespace argocd \
-            --create-namespace \
-            --set server.service.type=ClusterIP \
-            --set server.extraArgs={--insecure}
+          install_argocd() {
+            helm upgrade --install argocd argo/argo-cd \
+              --namespace argocd \
+              --create-namespace \
+              --set server.service.type=ClusterIP \
+              --set server.extraArgs={--insecure}
+          }
+
+          # Try to install ArgoCD, retry once if webhook race occurs
+          if ! install_argocd; then
+            echo "First attempt failed (likely webhook race). Re-checking webhook endpoints and retrying once..."
+            kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o yaml || true
+            sleep 10
+            install_argocd
+          fi
+
           echo "----------WAITING FOR 30 SECONDS FOR THE argocd PODS TO RUN----------"
           sleep 30
           echo "---> Checking argocd pods after ArgoCD install:"
