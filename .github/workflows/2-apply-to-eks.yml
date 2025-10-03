@@ -132,7 +132,7 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 3b. Create IAM Service Account for ALB Controller (IRSA)
+      #    # 3b. Create IAM Service Account for ALB Controller (IRSA)
       - name: Create IAM Service Account for ALB Controller
         env:
           POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
@@ -146,9 +146,39 @@ jobs:
           
           ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
           echo "IAM Role Name: $ROLE_NAME"
-          echo ""
-          echo "Running eksctl create iamserviceaccount..."
           
+          echo ""
+          echo "🧹 Cleaning up any existing resources..."
+          
+          # Delete Kubernetes service account if it exists
+          kubectl delete sa aws-load-balancer-controller -n kube-system --ignore-not-found=true
+          echo "✅ Deleted K8s service account (if existed)"
+          
+          # Delete IAM role if it exists
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+            echo "Found existing IAM role, deleting..."
+            
+            # Detach all policies
+            ATTACHED_POLICIES=$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'AttachedPolicies[].PolicyArn' --output text)
+            for POLICY in $ATTACHED_POLICIES; do
+              echo "  Detaching policy: $POLICY"
+              aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn "$POLICY"
+            done
+            
+            # Delete the role
+            aws iam delete-role --role-name "$ROLE_NAME"
+            echo "✅ Deleted IAM role"
+          else
+            echo "✅ No existing IAM role found"
+          fi
+          
+          echo ""
+          echo "⏳ Waiting 5 seconds for cleanup to propagate..."
+          sleep 5
+          
+          echo ""
+          echo "🆕 Creating fresh IRSA resources..."
           eksctl create iamserviceaccount \
             --cluster=${{ github.event.inputs.cluster_name }} \
             --namespace=kube-system \
@@ -156,11 +186,10 @@ jobs:
             --role-name "$ROLE_NAME" \
             --attach-policy-arn=$POLICY_ARN \
             --approve \
-            --override-existing-serviceaccounts \
             --region=${{ github.event.inputs.aws_region }}
           
           echo ""
-          echo "✅ IAM Role and Service Account created/updated"
+          echo "✅ IAM Role and Service Account created"
           echo ""
           echo "📋 Verifying Service Account:"
           kubectl get sa aws-load-balancer-controller -n kube-system -o yaml
