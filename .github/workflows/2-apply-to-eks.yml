@@ -42,146 +42,99 @@ jobs:
           echo "-----> Checking nodes:"
           kubectl get nodes
           sleep 5
-          echo "-----> Verifying cluster access:"
-          kubectl auth can-i get pods -A
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
       - name: Ensure IAM Policy for ALB Controller
-        id: ensure_policy
         run: |
-          set -euo pipefail
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
 
           # Check if the policy already exists
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
-          if [ -z "$EXISTING_POLICY_ARN" ]; then
-            echo "Policy $POLICY_NAME not found. Creating it..."
+
+          if [ -n "$EXISTING_POLICY_ARN" ]; then
+            echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
+            POLICY_ARN=$EXISTING_POLICY_ARN
+          else
             curl -sSfL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
             POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
-          else
-            echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
-            POLICY_ARN="$EXISTING_POLICY_ARN"
+            echo "Created policy: $POLICY_ARN"
           fi
-          echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
+          sleep 5
+
+          # Dynamically fetch node group name
+          NODE_GROUP_NAME=$(aws eks list-nodegroups \
+            --cluster-name ${{ github.event.inputs.cluster_name }} \
+            --query "nodegroups[0]" \
+            --output text)
+
+          if [ -z "$NODE_GROUP_NAME" ]; then
+            echo "XXXXXXX: --- No node groups found in cluster ${{ github.event.inputs.cluster_name }} -----XXXXX"
+            exit 1
+          fi
+
+          echo "Found node group: $NODE_GROUP_NAME"
+          sleep 5
+
+          NODE_ROLE=$(aws eks describe-nodegroup \
+            --cluster-name ${{ github.event.inputs.cluster_name }} \
+            --nodegroup-name "$NODE_GROUP_NAME" \
+            --query "nodegroup.nodeRole" --output text)
+
+          echo "Attaching IAM policy to node role: $NODE_ROLE"
+          aws iam attach-role-policy --role-name $(basename $NODE_ROLE) --policy-arn $POLICY_ARN || true
+          sleep 5
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 3. Install eksctl and setup IRSA for ALB Controller
-      - name: Install eksctl
-        run: |
-          curl -sSfL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" -o /tmp/eksctl.tgz
-          sudo tar -xzf /tmp/eksctl.tgz -C /usr/local/bin
-          eksctl version
-
-      - name: Associate IAM OIDC Provider with cluster (idempotent)
-        run: |
-          eksctl utils associate-iam-oidc-provider \
-            --cluster ${{ github.event.inputs.cluster_name }} \
-            --region ${{ github.event.inputs.aws_region }} \
-            --approve
-
-      - name: Create/Update IRSA Role and Service Account for ALB Controller
-        env:
-          POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
-        run: |
-          set -euo pipefail
-          ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
-
-          eksctl create iamserviceaccount \
-            --cluster ${{ github.event.inputs.cluster_name }} \
-            --region ${{ github.event.inputs.aws_region }} \
-            --namespace kube-system \
-            --name aws-load-balancer-controller \
-            --role-name "$ROLE_NAME" \
-            --attach-policy-arn "$POLICY_ARN" \
-            --approve \
-            --override-existing-serviceaccounts
-          echo "IRSA service account ensured: kube-system/aws-load-balancer-controller"
-#-------------------------------------------------------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install AWS Load Balancer Controller with proper wait conditions
-     # 4. Install AWS Load Balancer Controller with proper wait conditions
+      # 3. Install AWS Load Balancer Controller
       - name: Install AWS Load Balancer Controller
         run: |
-          set -euo pipefail
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
           echo "Found VPC ID: $VPC_ID"
-          
+          sleep 5
+
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
-
-          # Install WITHOUT --wait first, then check manually
+          
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
-            --set serviceAccount.create=false \
+            --set serviceAccount.create=true \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set vpcId=$VPC_ID \
             --set region=${{ github.event.inputs.aws_region }}
 
-          echo "Helm chart installed. Waiting for deployment to be ready..."
-          
-          # Wait for deployment with explicit timeout
-          kubectl -n kube-system wait --for=condition=available deployment/aws-load-balancer-controller --timeout=3m || {
-            echo "ERROR: Deployment failed to become available. Checking logs..."
-            kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller
-            kubectl -n kube-system describe deployment aws-load-balancer-controller
-            kubectl -n kube-system logs -l app.kubernetes.io/name=aws-load-balancer-controller --tail=100 || true
-            exit 1
-          }
-
-          echo "Waiting for webhook Service endpoints to be populated..."
-          for i in $(seq 1 30); do
-            EP=$(kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
-            if [ -n "${EP:-}" ]; then
-              echo "Webhook endpoints ready: $EP"
-              break
-            fi
-            echo "No webhook endpoints yet; sleeping 5s... ($i/30)"
-            sleep 5
-          done
-
-          echo "---> Final status check:"
-          kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
-          kubectl -n kube-system get svc,endpoints aws-load-balancer-webhook-service
+          echo "----------WAITING FOR 60 SECONDS FOR THE ALB CONTROLLER TO INSTALL----------"
+          sleep 60
+          echo "---> Checking kube-system pods after ALB controller install:"
+          kubectl get pods -n kube-system
+          sleep 5
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 5. Install ArgoCD with retry logic
+      # 4. Install ArgoCD
       - name: Install ArgoCD
         run: |
-          set -e
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
-
-          install_argocd() {
-            helm upgrade --install argocd argo/argo-cd \
-              --namespace argocd \
-              --create-namespace \
-              --set server.service.type=ClusterIP \
-              --set server.extraArgs={--insecure}
-          }
-
-          # Try to install ArgoCD, retry once if webhook race occurs
-          if ! install_argocd; then
-            echo "First attempt failed. Re-checking webhook endpoints and retrying..."
-            kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o yaml || true
-            sleep 10
-            install_argocd
-          fi
-
-          echo "Waiting 30 seconds for ArgoCD pods to start..."
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace argocd \
+            --create-namespace \
+            --set server.service.type=ClusterIP \
+            --set server.extraArgs={--insecure}
+          
+          echo "----------WAITING FOR 30 SECONDS FOR THE argocd PODS TO RUN----------"
           sleep 30
-          echo "---> ArgoCD pods status:"
+          echo "---> Checking argocd pods after ArgoCD install:"
           kubectl get pods -n argocd
+          sleep 5
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 6. Bootstrap ArgoCD Applications
-      - name: Apply Argo CD Application Manifests
+      # 5. Expose ArgoCD Server
+      - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f argocd/
@@ -189,14 +142,14 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 7. Get the ALB DNS Name
+      # 6. Get the ALB DNS Name
       - name: Get Ingress URL
         run: |
-          echo "Waiting 60 seconds for Ingress to get an address..."
+          echo "---------Waiting for Ingress to get an address... 60 SECONDS SLEEP------"
           sleep 60
           kubectl get ingress shared-main-ingress -n argocd -o wide || true
           sleep 5
-          echo "Describe Ingress:"
+          echo " --->Describe Ingress:"
           kubectl describe ingress shared-main-ingress -n argocd || true
           sleep 5
           echo "=========================================================================="
@@ -205,7 +158,8 @@ jobs:
           echo ""
           echo "=========================================================================="
 
-          echo "ArgoCD initial admin password:"
+          echo " --->ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d || true
           echo ""
+          echo "Use the output of this command as the password for ArgoCD."
 #-------------------------------------------------------------------------------------------------------------------------------
