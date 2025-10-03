@@ -32,7 +32,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
-#-------------------------------------------------------------------------------------------------------------------------------
       # 1. Connect to the EKS Cluster
       - name: Update Kubeconfig
         run: |
@@ -42,52 +41,9 @@ jobs:
           echo "-----> Checking nodes:"
           kubectl get nodes
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
 
-#-------------------------------------------------------------------------------------------------------------------------------
-      # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
-      - name: Ensure IAM Policy for ALB Controller
-        run: |
-          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+      # STEP #2 REMOVED - This is now handled by your pre-configured IRSA setup.
 
-          # Check if the policy already exists
-          EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
-
-          if [ -n "$EXISTING_POLICY_ARN" ]; then
-            echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
-            POLICY_ARN=$EXISTING_POLICY_ARN
-          else
-            curl -sSfL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
-            POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
-            echo "Created policy: $POLICY_ARN"
-          fi
-          sleep 5
-
-          # Dynamically fetch node group name
-          NODE_GROUP_NAME=$(aws eks list-nodegroups \
-            --cluster-name ${{ github.event.inputs.cluster_name }} \
-            --query "nodegroups[0]" \
-            --output text)
-
-          if [ -z "$NODE_GROUP_NAME" ]; then
-            echo "XXXXXXX: --- No node groups found in cluster ${{ github.event.inputs.cluster_name }} -----XXXXX"
-            exit 1
-          fi
-
-          echo "Found node group: $NODE_GROUP_NAME"
-          sleep 5
-
-          NODE_ROLE=$(aws eks describe-nodegroup \
-            --cluster-name ${{ github.event.inputs.cluster_name }} \
-            --nodegroup-name "$NODE_GROUP_NAME" \
-            --query "nodegroup.nodeRole" --output text)
-
-          echo "Attaching IAM policy to node role: $NODE_ROLE"
-          aws iam attach-role-policy --role-name $(basename $NODE_ROLE) --policy-arn $POLICY_ARN || true
-          sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------------------------------------------------------
       # 3. Install AWS Load Balancer Controller
       - name: Install AWS Load Balancer Controller
         run: |
@@ -101,19 +57,18 @@ jobs:
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
-            --set serviceAccount.create=true \
+            --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller \
             --set vpcId=$VPC_ID \
             --set region=${{ github.event.inputs.aws_region }}
 
           echo "----------WAITING FOR 60 SECONDS FOR THE ALB CONTROLLER TO INSTALL----------"
           sleep 60
-          echo "---> Checking kube-system pods after ALB controller install:"
-          kubectl get pods -n kube-system
+          # Forcing a restart ensures the pods pick up the new service account token
+          echo "---> Restarting controller pods to apply new service account settings"
+          kubectl rollout restart deployment aws-load-balancer-controller -n kube-system
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
 
-#-------------------------------------------------------------------------------------------------------------------------------
       # 4. Install ArgoCD
       - name: Install ArgoCD
         run: |
@@ -130,18 +85,14 @@ jobs:
           echo "---> Checking argocd pods after ArgoCD install:"
           kubectl get pods -n argocd
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
 
-#-------------------------------------------------------------------------------------------------------------------------------
       # 5. Expose ArgoCD Server
       - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f argocd/
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
 
-#-------------------------------------------------------------------------------------------------------------------------------
       # 6. Get the ALB DNS Name
       - name: Get Ingress URL
         run: |
@@ -157,9 +108,8 @@ jobs:
           kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true
           echo ""
           echo "=========================================================================="
-
+          
           echo " --->ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d || true
           echo ""
           echo "Use the output of this command as the password for ArgoCD."
-#-------------------------------------------------------------------------------------------------------------------------------
