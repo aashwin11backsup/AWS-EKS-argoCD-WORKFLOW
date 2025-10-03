@@ -47,7 +47,8 @@ jobs:
       # 2. Setup IAM Policy and Role for ALB Controller (if you want CI to manage them)
       #    Alternatively, manage these outside CI for security and stability.
       - name: Setup IAM Policy and Role for ALB Controller (Optional)
-        if: false # Set to true if you want this job to create/manage IAM resources
+        if: true
+        # Set to true if you want this job to create/manage IAM resources
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
           echo "Checking for IAM policy: $POLICY_NAME"
