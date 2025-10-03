@@ -26,54 +26,96 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        run: |
+          echo "=========================================="
+          echo "🔐 Configuring AWS Credentials"
+          echo "=========================================="
+        
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
-      # Step to install eksctl, a required tool
+      - name: Verify AWS Authentication
+        run: |
+          echo "=========================================="
+          echo "✅ Verifying AWS Authentication"
+          echo "=========================================="
+          CALLER_IDENTITY=$(aws sts get-caller-identity)
+          echo "Caller Identity: $CALLER_IDENTITY"
+          ACCOUNT_ID=$(echo $CALLER_IDENTITY | jq -r '.Account')
+          echo "✅ Authenticated as Account: $ACCOUNT_ID"
+          echo "=========================================="
+
+      # Step to install eksctl
       - name: Install eksctl
         run: |
+          echo "=========================================="
+          echo "📦 Installing eksctl"
+          echo "=========================================="
           curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
           sudo mv /tmp/eksctl /usr/local/bin
-          echo "eksctl version: $(eksctl version)"
+          EKSCTL_VERSION=$(eksctl version)
+          echo "✅ eksctl installed: $EKSCTL_VERSION"
+          echo "=========================================="
           
 #-------------------------------------------------------------------------------------------------------------------------------
       # 1. Connect to the EKS Cluster
       - name: Update Kubeconfig
         run: |
+          echo "=========================================="
+          echo "🔌 Connecting to EKS Cluster"
+          echo "=========================================="
+          echo "Region: ${{ github.event.inputs.aws_region }}"
+          echo "Cluster: ${{ github.event.inputs.cluster_name }}"
+          
           aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
-          echo "Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
-          sleep 5
-          echo "-----> Checking nodes:"
-          kubectl get nodes
-          sleep 5
+          echo "✅ Kubeconfig updated"
+          
+          echo ""
+          echo "📊 Checking cluster nodes:"
+          kubectl get nodes -o wide
+          
+          NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+          echo ""
+          echo "✅ Found $NODE_COUNT node(s) in the cluster"
+          echo "=========================================="
+          sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 2. Create IAM Policy for ALB Controller (if it doesn't exist)
+      # 2. Create IAM Policy for ALB Controller
       - name: Ensure IAM Policy for ALB Controller
         id: ensure_policy
         run: |
+          echo "=========================================="
+          echo "📋 Ensuring IAM Policy for ALB Controller"
+          echo "=========================================="
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "Account ID: $ACCOUNT_ID"
+          echo "Policy Name: $POLICY_NAME"
 
           # Check if the policy already exists
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
           if [ -n "$EXISTING_POLICY_ARN" ]; then
-            echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
+            echo "✅ Policy already exists: $EXISTING_POLICY_ARN"
             POLICY_ARN=$EXISTING_POLICY_ARN
           else
-            echo "Creating policy $POLICY_NAME..."
+            echo "⚠️  Policy not found. Creating new policy..."
             curl -sSfL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            echo "Downloaded policy document"
+            
             POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
-            echo "Created policy: $POLICY_ARN"
+            echo "✅ Created policy: $POLICY_ARN"
           fi
           
           echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
-          echo "Final Policy ARN: $POLICY_ARN"
+          echo ""
+          echo "✅ Final Policy ARN: $POLICY_ARN"
+          echo "=========================================="
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
@@ -82,33 +124,65 @@ jobs:
         env:
           POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
         run: |
+          echo "=========================================="
+          echo "🔑 Creating IRSA for ALB Controller"
+          echo "=========================================="
+          echo "Cluster: ${{ github.event.inputs.cluster_name }}"
+          echo "Region: ${{ github.event.inputs.aws_region }}"
+          echo "Policy ARN: $POLICY_ARN"
+          
+          ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
+          echo "IAM Role Name: $ROLE_NAME"
+          echo ""
+          echo "Running eksctl create iamserviceaccount..."
+          
           eksctl create iamserviceaccount \
             --cluster=${{ github.event.inputs.cluster_name }} \
             --namespace=kube-system \
             --name=aws-load-balancer-controller \
-            --role-name "AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}" \
+            --role-name "$ROLE_NAME" \
             --attach-policy-arn=$POLICY_ARN \
             --approve \
             --override-existing-serviceaccounts \
             --region=${{ github.event.inputs.aws_region }}
           
-          echo "IAM Role and Service Account for ALB Controller created."
-          sleep 5
-          
-          # Verify the service account
+          echo ""
+          echo "✅ IAM Role and Service Account created/updated"
+          echo ""
+          echo "📋 Verifying Service Account:"
           kubectl get sa aws-load-balancer-controller -n kube-system -o yaml
+          
+          echo ""
+          echo "🔍 Checking annotation:"
+          ROLE_ARN=$(kubectl get sa aws-load-balancer-controller -n kube-system -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}')
+          if [ -n "$ROLE_ARN" ]; then
+            echo "✅ Service Account has role annotation: $ROLE_ARN"
+          else
+            echo "❌ ERROR: Service Account missing role annotation!"
+            exit 1
+          fi
+          echo "=========================================="
+          sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 4. Install AWS Load Balancer Controller
       - name: Install AWS Load Balancer Controller
         run: |
-          VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
-          echo "Found VPC ID: $VPC_ID"
+          echo "=========================================="
+          echo "🚀 Installing AWS Load Balancer Controller"
+          echo "=========================================="
           
+          VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "VPC ID: $VPC_ID"
+          
+          echo ""
+          echo "Adding Helm repo..."
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           
+          echo ""
+          echo "Installing Helm chart..."
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
@@ -117,59 +191,125 @@ jobs:
             --set vpcId=$VPC_ID \
             --set region=${{ github.event.inputs.aws_region }}
 
-          echo "----------WAITING FOR 60 SECONDS FOR THE ALB CONTROLLER TO DEPLOY----------"
+          echo ""
+          echo "⏳ Waiting 60 seconds for controller to deploy..."
           sleep 60
-          echo "---> Checking ALB Controller deployment status:"
-          kubectl get deployment aws-load-balancer-controller -n kube-system
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
           
-          echo "---> Checking ALB controller logs:"
+          echo ""
+          echo "📊 Checking deployment status:"
+          kubectl get deployment aws-load-balancer-controller -n kube-system
+          
+          echo ""
+          echo "📦 Checking pods:"
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
+          
+          POD_STATUS=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o jsonpath='{.items[0].status.phase}')
+          echo ""
+          if [ "$POD_STATUS" == "Running" ]; then
+            echo "✅ ALB Controller pod is Running"
+          else
+            echo "⚠️  ALB Controller pod status: $POD_STATUS"
+          fi
+          
+          echo ""
+          echo "📝 Recent controller logs:"
           kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=30 || true
-          sleep 5
+          echo "=========================================="
+          sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 5. Install ArgoCD
       - name: Install ArgoCD
         run: |
+          echo "=========================================="
+          echo "🐙 Installing ArgoCD"
+          echo "=========================================="
+          
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
+          
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --create-namespace \
             --set server.service.type=ClusterIP \
             --set server.extraArgs={--insecure}
           
-          echo "----------WAITING FOR 30 SECONDS FOR ARGO PODS TO RUN----------"
+          echo ""
+          echo "⏳ Waiting 30 seconds for ArgoCD pods to start..."
           sleep 30
-          echo "---> Checking argocd pods:"
-          kubectl get pods -n argocd
-          sleep 5
+          
+          echo ""
+          echo "📦 Checking ArgoCD pods:"
+          kubectl get pods -n argocd -o wide
+          
+          READY_PODS=$(kubectl get pods -n argocd --no-headers | grep -c "Running" || echo "0")
+          TOTAL_PODS=$(kubectl get pods -n argocd --no-headers | wc -l)
+          echo ""
+          echo "✅ $READY_PODS/$TOTAL_PODS pods are Running"
+          echo "=========================================="
+          sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 6. Expose ArgoCD Server using Ingress
       - name: Expose ArgoCD Server
         run: |
+          echo "=========================================="
+          echo "🌐 Creating Ingress for ArgoCD"
+          echo "=========================================="
+          
+          echo "Waiting for ArgoCD server to be ready..."
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
+          echo "✅ ArgoCD server is ready"
+          
+          echo ""
+          echo "Applying Ingress manifest from argocd/ directory..."
           kubectl apply -f argocd/
-          sleep 5
+          
+          echo ""
+          echo "📋 Checking Ingress resource:"
+          kubectl get ingress -n argocd
+          echo "=========================================="
+          sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 7. Get the ALB DNS Name for ArgoCD
       - name: Get Ingress URL
         run: |
-          echo "---------Waiting up to 2 minutes for Ingress to get an address...------"
-          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=120s || true
-
-          echo "=========================================================================="
-          echo "✅ Your ArgoCD URL is:"
-          kubectl get ingress shared-main-ingress -n argocd -o jsonpath='http://{.status.loadBalancer.ingress[0].hostname}' || echo "ALB not ready yet, check in a few minutes"
+          echo "=========================================="
+          echo "⏳ Waiting for ALB to be provisioned..."
+          echo "=========================================="
+          echo "This may take 2-3 minutes..."
           echo ""
-          echo "=========================================================================="
+          
+          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=120s || echo "⚠️  Timeout reached, checking status..."
 
-          echo "🔑 ArgoCD initial admin password:"
-          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d || true
           echo ""
+          echo "📋 Ingress Details:"
+          kubectl describe ingress shared-main-ingress -n argocd
+          
+          echo ""
+          echo "=========================================="
+          ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+          
+          if [ -n "$ALB_HOSTNAME" ]; then
+            echo "✅ ArgoCD URL is ready:"
+            echo "   http://$ALB_HOSTNAME"
+          else
+            echo "⚠️  ALB not ready yet. Check again in a few minutes with:"
+            echo "   kubectl get ingress shared-main-ingress -n argocd"
+          fi
+          echo "=========================================="
+
+          echo ""
+          echo "=========================================="
+          echo "🔑 ArgoCD Login Credentials"
+          echo "=========================================="
+          echo "Username: admin"
+          echo -n "Password: "
+          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || echo "Secret not found"
+          echo ""
+          echo "=========================================="
 #-------------------------------------------------------------------------------------------------------------------------------
