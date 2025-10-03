@@ -32,6 +32,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ github.event.inputs.aws_region }}
 
+#-------------------------------------------------------------------------------------------------------------------------------
       # 1. Connect to the EKS Cluster
       - name: Update Kubeconfig
         run: |
@@ -41,10 +42,79 @@ jobs:
           echo "-----> Checking nodes:"
           kubectl get nodes
           sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-      # STEP #2 REMOVED - This is now handled by your pre-configured IRSA setup.
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 2. Install eksctl (needed for IRSA setup)
+      - name: Install eksctl
+        run: |
+          curl -sSfL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" -o /tmp/eksctl.tgz
+          sudo tar -xzf /tmp/eksctl.tgz -C /usr/local/bin
+          eksctl version
+#-------------------------------------------------------------------------------------------------------------------------------
 
-      # 3. Install AWS Load Balancer Controller
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 3. Create/Attach IAM Policy for AWS Load Balancer Controller
+      - name: Ensure IAM Policy for ALB Controller
+        id: ensure_policy
+        run: |
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+
+          # Check if the policy already exists
+          EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
+
+          if [ -n "$EXISTING_POLICY_ARN" ]; then
+            echo "Policy $POLICY_NAME already exists: $EXISTING_POLICY_ARN"
+            POLICY_ARN=$EXISTING_POLICY_ARN
+          else
+            curl -sSfL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
+            echo "Created policy: $POLICY_ARN"
+          fi
+          
+          echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
+          echo "Policy ARN: $POLICY_ARN"
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 4. Setup OIDC Provider and Create IRSA Service Account
+      - name: Associate IAM OIDC Provider with cluster
+        run: |
+          eksctl utils associate-iam-oidc-provider \
+            --cluster ${{ github.event.inputs.cluster_name }} \
+            --region ${{ github.event.inputs.aws_region }} \
+            --approve
+
+      - name: Create IRSA Service Account for ALB Controller
+        env:
+          POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
+        run: |
+          ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
+
+          # Check if service account already exists
+          if kubectl get sa aws-load-balancer-controller -n kube-system 2>/dev/null; then
+            echo "Service account already exists, deleting it first..."
+            kubectl delete sa aws-load-balancer-controller -n kube-system
+          fi
+
+          # Create service account with IRSA
+          eksctl create iamserviceaccount \
+            --cluster ${{ github.event.inputs.cluster_name }} \
+            --region ${{ github.event.inputs.aws_region }} \
+            --namespace kube-system \
+            --name aws-load-balancer-controller \
+            --role-name "$ROLE_NAME" \
+            --attach-policy-arn "$POLICY_ARN" \
+            --approve
+
+          echo "IRSA service account created: kube-system/aws-load-balancer-controller"
+          
+          # Verify the service account annotation
+          kubectl get sa aws-load-balancer-controller -n kube-system -o yaml
+#-------------------------------------------------------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 5. Install AWS Load Balancer Controller (with IRSA)
       - name: Install AWS Load Balancer Controller
         run: |
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
@@ -54,6 +124,7 @@ jobs:
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           
+          # IMPORTANT: serviceAccount.create=false because eksctl already created it with IRSA
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
@@ -64,12 +135,16 @@ jobs:
 
           echo "----------WAITING FOR 60 SECONDS FOR THE ALB CONTROLLER TO INSTALL----------"
           sleep 60
-          # Forcing a restart ensures the pods pick up the new service account token
-          echo "---> Restarting controller pods to apply new service account settings"
-          kubectl rollout restart deployment aws-load-balancer-controller -n kube-system
+          echo "---> Checking kube-system pods after ALB controller install:"
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          echo "---> Checking ALB controller logs:"
+          kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50 || true
           sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-      # 4. Install ArgoCD
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 6. Install ArgoCD
       - name: Install ArgoCD
         run: |
           helm repo add argo https://argoproj.github.io/argo-helm
@@ -85,19 +160,23 @@ jobs:
           echo "---> Checking argocd pods after ArgoCD install:"
           kubectl get pods -n argocd
           sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-      # 5. Expose ArgoCD Server
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 7. Expose ArgoCD Server
       - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
           kubectl apply -f argocd/
           sleep 5
+#-------------------------------------------------------------------------------------------------------------------------------
 
-      # 6. Get the ALB DNS Name
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 8. Get the ALB DNS Name
       - name: Get Ingress URL
         run: |
-          echo "---------Waiting for Ingress to get an address... 60 SECONDS SLEEP------"
-          sleep 60
+          echo "---------Waiting for Ingress to get an address... 90 SECONDS SLEEP------"
+          sleep 90
           kubectl get ingress shared-main-ingress -n argocd -o wide || true
           sleep 5
           echo " --->Describe Ingress:"
@@ -108,8 +187,9 @@ jobs:
           kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || true
           echo ""
           echo "=========================================================================="
-          
+
           echo " --->ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d || true
           echo ""
           echo "Use the output of this command as the password for ArgoCD."
+#-------------------------------------------------------------------------------------------------------------------------------
