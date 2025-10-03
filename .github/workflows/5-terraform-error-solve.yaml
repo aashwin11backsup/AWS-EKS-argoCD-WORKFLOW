@@ -9,14 +9,13 @@ on:
       tf_directory:
         description: 'Directory where Terraform files are located'
         required: true
-        default: './terraform' # Adjust this to your terraform directory
+        default: './terraform-project'
 
 jobs:
   unlock-state:
     name: 'Force Unlock Terraform State'
     runs-on: ubuntu-latest
     
-    # Add the permissions required to assume your AWS role
     permissions:
       id-token: write
       contents: read
@@ -28,25 +27,57 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # This should be the same configuration as your main workflow
-          # e.g., using role-to-assume for OIDC
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: 'us-east-1' # Change to your AWS region
+          aws-region: 'us-east-1'
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.6.0 # Use the same version as your other workflows
+          terraform_version: 1.6.0
 
       - name: List files in the repository
-        run: ls -R
+        run: |
+          echo "=========================================="
+          echo "Repository Structure"
+          echo "=========================================="
+          ls -la
+          echo ""
+          echo "Terraform directory contents:"
+          ls -la ${{ github.event.inputs.tf_directory }}
+          echo "=========================================="
 
       - name: Terraform Init
-        run: terraform init
-        working-directory: ./terraform-project
+        run: |
+          echo "=========================================="
+          echo "Initializing Terraform"
+          echo "=========================================="
+          terraform init
+          echo "---> Correct: Terraform initialized"
+          echo "=========================================="
+        working-directory: ${{ github.event.inputs.tf_directory }}
 
       - name: Force Unlock
         id: unlock
-        run: terraform force-unlock ${{ github.event.inputs.lock_id }}
-        working-directory: ./terraform-project
+        run: |
+          echo "=========================================="
+          echo "Force Unlocking Terraform State"
+          echo "=========================================="
+          echo "Lock ID: ${{ github.event.inputs.lock_id }}"
+          echo ""
+          
+          terraform force-unlock -force ${{ github.event.inputs.lock_id }}
+          
+          echo ""
+          echo "---> Correct: State unlocked successfully"
+          echo "=========================================="
+        working-directory: ${{ github.event.inputs.tf_directory }}
+
+      - name: Unlock Complete
+        run: |
+          echo "=========================================="
+          echo "UNLOCK COMPLETE"
+          echo "=========================================="
+          echo "The Terraform state lock has been removed."
+          echo "You can now retry your terraform destroy operation."
+          echo "=========================================="
