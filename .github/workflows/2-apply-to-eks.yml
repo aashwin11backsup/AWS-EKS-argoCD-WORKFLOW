@@ -37,46 +37,24 @@ jobs:
       - name: Update Kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
-          echo "CORRECT: Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
+          echo "Kubeconfig updated for cluster: ${{ github.event.inputs.cluster_name }}"
           sleep 5
           echo "-----> Checking nodes:"
           kubectl get nodes
           sleep 5
-#-------------------------------------------------------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------------------------------------------------------
-      # 1b. NEW STEP: Grant CI/CD user admin access to the cluster
-      - name: Create IAM Identity Mapping for CI/CD
-        run: |
-          # Get the ARN of the IAM user/role running the workflow
-          CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
-          # The username in Kubernetes will be the session name, extract the user name from ARN
-          CALLER_USER=$(echo $CALLER_ARN | cut -d'/' -f2)
-          echo "INFO: Granting cluster-admin access to IAM identity: $CALLER_ARN"
-
-          # Use eksctl to add this identity to the aws-auth ConfigMap
-          eksctl create iamidentitymapping \
-            --cluster ${{ github.event.inputs.cluster_name }} \
-            --region ${{ github.event.inputs.aws_region }} \
-            --arn $CALLER_ARN \
-            --group system:masters \
-            --username $CALLER_USER
-          
-          echo "INFO: Successfully added identity mapping. Verifying access..."
+          echo "-----> Verifying cluster access:"
           kubectl auth can-i get pods -A
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 2. Create/Attach IAM Policy for AWS Load Balancer Controller
-      # NOTE: NOT relying on the node role anymore. Using IRSA for the controller. 
-      # AS OBSERVED, Version:1.28 is no more supported and witht that the Node role is also not supported for ALB Creation.
       - name: Ensure IAM Policy for ALB Controller
         id: ensure_policy
         run: |
           set -euo pipefail
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
 
-          # Check if the policy already exists (checking all scopes)
+          # Check if the policy already exists
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
           if [ -z "$EXISTING_POLICY_ARN" ]; then
             echo "Policy $POLICY_NAME not found. Creating it..."
@@ -90,8 +68,7 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 2b. Ensure OIDC provider and create IRSA-bound service account for the controller
-      #Using eksctl to associate the cluster's OIDC and create the Service Account with the IAM role + annotation.
+      # 3. Install eksctl and setup IRSA for ALB Controller
       - name: Install eksctl
         run: |
           curl -sSfL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" -o /tmp/eksctl.tgz
@@ -112,7 +89,6 @@ jobs:
           set -euo pipefail
           ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${{ github.event.inputs.cluster_name }}"
 
-          # Create/Update the SA with IRSA role attached (idempotent with --approve and --override-existing-serviceaccounts)
           eksctl create iamserviceaccount \
             --cluster ${{ github.event.inputs.cluster_name }} \
             --region ${{ github.event.inputs.aws_region }} \
@@ -126,7 +102,7 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 3. Install AWS Load Balancer Controller with proper wait conditions
+      # 4. Install AWS Load Balancer Controller with proper wait conditions
       - name: Install AWS Load Balancer Controller
         run: |
           set -euo pipefail
@@ -136,7 +112,6 @@ jobs:
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
 
-          # IMPORTANT: serviceAccount.create=false because eksctl already created the SA with IRSA annotation
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ github.event.inputs.cluster_name }} \
@@ -166,12 +141,12 @@ jobs:
           echo "---> Checking kube-system pods after ALB controller install:"
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
           
-          echo "---> Controller logs (last 50 lines) for quick health check:"
+          echo "---> Controller logs (last 50 lines):"
           kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50 || true
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 4. Install ArgoCD with --insecure flag (with retry logic)
+      # 5. Install ArgoCD with retry logic
       - name: Install ArgoCD
         run: |
           set -e
@@ -188,20 +163,20 @@ jobs:
 
           # Try to install ArgoCD, retry once if webhook race occurs
           if ! install_argocd; then
-            echo "First attempt failed (likely webhook race). Re-checking webhook endpoints and retrying once..."
+            echo "First attempt failed. Re-checking webhook endpoints and retrying..."
             kubectl -n kube-system get endpoints aws-load-balancer-webhook-service -o yaml || true
             sleep 10
             install_argocd
           fi
 
-          echo "----------WAITING FOR 30 SECONDS FOR THE argocd PODS TO RUN----------"
+          echo "Waiting 30 seconds for ArgoCD pods to start..."
           sleep 30
-          echo "---> Checking argocd pods after ArgoCD install:"
+          echo "---> ArgoCD pods status:"
           kubectl get pods -n argocd
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 5. Bootstrap ArgoCD Applications
+      # 6. Bootstrap ArgoCD Applications
       - name: Apply Argo CD Application Manifests
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
@@ -210,15 +185,14 @@ jobs:
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-      # 6. Get the ALB DNS Name
+      # 7. Get the ALB DNS Name
       - name: Get Ingress URL
         run: |
-          echo "---------Waiting for Ingress to get an address... 60 SECONDS SLEEP------"
+          echo "Waiting 60 seconds for Ingress to get an address..."
           sleep 60
-          # --- FIX: Use the new ingress name 'shared-main-ingress' ---
           kubectl get ingress shared-main-ingress -n argocd -o wide || true
           sleep 5
-          echo " --->Describe Ingress:"
+          echo "Describe Ingress:"
           kubectl describe ingress shared-main-ingress -n argocd || true
           sleep 5
           echo "=========================================================================="
@@ -227,8 +201,7 @@ jobs:
           echo ""
           echo "=========================================================================="
 
-          echo " --->ArgoCD initial admin password:"
+          echo "ArgoCD initial admin password:"
           kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d || true
           echo ""
-          echo "Use the output of this command as the password for ArgoCD."
 #-------------------------------------------------------------------------------------------------------------------------------
