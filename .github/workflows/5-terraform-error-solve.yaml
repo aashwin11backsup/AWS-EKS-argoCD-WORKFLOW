@@ -44,9 +44,9 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
-        working-directory: ./terraform
+        working-directory: ./terraform-project
 
       - name: Force Unlock
         id: unlock
         run: terraform force-unlock ${{ github.event.inputs.lock_id }}
-        working-directory: ./terraform
+        working-directory: ./terraform-project
