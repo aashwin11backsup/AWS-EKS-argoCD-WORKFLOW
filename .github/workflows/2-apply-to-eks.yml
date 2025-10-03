@@ -140,7 +140,7 @@ jobs:
       - name: Expose ArgoCD Server
         run: |
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
-          kubectl apply -f kubernetes-manifests/argocd-ingress.yml
+          kubectl apply -f argocd/
           sleep 5
 #-------------------------------------------------------------------------------------------------------------------------------
 
