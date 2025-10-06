@@ -1,5 +1,7 @@
+# k8s/base/kustomization.yaml
 resources:
 - deployment.yaml
 - service.yaml
-- ingress.yaml
-
+# Remove the old ingress and add the two new ones
+- ingress-argocd.yaml
+- ingress-currencyconverter.yaml

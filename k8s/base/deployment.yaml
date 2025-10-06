@@ -1,6 +1,8 @@
+# k8s/base/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  # The namespace will be applied by Argo CD based on the Application manifest
   name: currency-converter
 spec:
   replicas: 1
