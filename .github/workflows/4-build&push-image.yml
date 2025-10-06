@@ -144,6 +144,7 @@ jobs:
       - name: Login to Argo CD
         run: |
           echo "--> Logging into Argo CD server..."
+          kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
           argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure --grpc-web
           echo "--> Argo CD login successful."
         env:
