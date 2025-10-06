@@ -144,14 +144,20 @@ jobs:
           echo "=== 🔹 Logging in to ArgoCD ==="
           rm -rf ~/.argocd
 
-          argocd login $ARGOCD_SERVER --username admin --password $ARGOCD_ADMIN_PASSWORD --grpc-web --insecure || {
-            echo "ERROR---XXX: ArgoCD login failed"; exit 1;
-          }
-          echo "Correct--------> Successfully logged in to ArgoCD."
+          if [ -z "$ARGOCD_ADMIN_PASSWORD" ]; then
+            echo "❌ ERROR: ARGOCD_ADMIN_PASSWORD is empty!"
+            exit 1
+          fi
 
+          argocd login $ARGOCD_SERVER --username admin --password "$ARGOCD_ADMIN_PASSWORD" --grpc-web --insecure || {
+            echo "❌ ERROR: ArgoCD login failed"; exit 1;
+          }
+
+          echo "✅ Successfully logged in to ArgoCD."
         env:
           ARGOCD_SERVER: argocd.trialphase.shop
           ARGOCD_ADMIN_PASSWORD: ${{ secrets.ARGOCD_ADMIN_PASSWORD }}
+
 
 
       - name: Sync Argo CD Application
