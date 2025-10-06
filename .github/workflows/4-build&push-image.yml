@@ -134,39 +134,39 @@ jobs:
             echo "--> Pushed updated manifest to repository."
           fi
 
-      - name: Install Argo CD CLI
-        run: |
-          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
+      # - name: Install Argo CD CLI
+      #   run: |
+      #     curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+      #     chmod +x /usr/local/bin/argocd
 
-      - name: Login to Argo CD
-        run: |
-          echo "=== 🔹 Logging in to ArgoCD ==="
-          rm -rf ~/.argocd
+      # - name: Login to Argo CD
+      #   run: |
+      #     echo "=== 🔹 Logging in to ArgoCD ==="
+      #     rm -rf ~/.argocd
 
-          if [ -z "$ARGOCD_AUTH_TOKEN" ]; then
-            echo "❌ ERROR: ARGOCD_AUTH_TOKEN is empty!"
-            exit 1
-          fi
+      #     if [ -z "$ARGOCD_AUTH_TOKEN" ]; then
+      #       echo "❌ ERROR: ARGOCD_AUTH_TOKEN is empty!"
+      #       exit 1
+      #     fi
 
-          argocd login $ARGOCD_SERVER --username admin --password "$ARGOCD_AUTH_TOKEN" --grpc-web --insecure || {
-            echo "❌ ERROR: ArgoCD login failed"; exit 1;
-          }
+      #     argocd login $ARGOCD_SERVER --username admin --password "$ARGOCD_AUTH_TOKEN" --grpc-web --insecure || {
+      #       echo "❌ ERROR: ArgoCD login failed"; exit 1;
+      #     }
 
-          echo "✅ Successfully logged in to ArgoCD."
-        env:
-          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+      #     echo "✅ Successfully logged in to ArgoCD."
+      #   env:
+      #     ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+      #     ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
 
 
-      - name: Sync Argo CD Application
-        run: |
-          echo "===  Starting ArgoCD sync for app: $ARGOCD_APP_NAME ==="
-          argocd app get $ARGOCD_APP_NAME || echo " PROBLEM--> App not found yet, continuing..."
-          argocd app sync $ARGOCD_APP_NAME || {
-            echo "ERROR---XXX: Sync failed for app: $ARGOCD_APP_NAME"; exit 1;
-          }
-          echo "Correct--------> ArgoCD sync completed successfully."
-        env:
-          ARGOCD_APP_NAME: currencyconverter-production
+      # - name: Sync Argo CD Application
+      #   run: |
+      #     echo "===  Starting ArgoCD sync for app: $ARGOCD_APP_NAME ==="
+      #     argocd app get $ARGOCD_APP_NAME || echo " PROBLEM--> App not found yet, continuing..."
+      #     argocd app sync $ARGOCD_APP_NAME || {
+      #       echo "ERROR---XXX: Sync failed for app: $ARGOCD_APP_NAME"; exit 1;
+      #     }
+      #     echo "Correct--------> ArgoCD sync completed successfully."
+      #   env:
+      #     ARGOCD_APP_NAME: currencyconverter-production
