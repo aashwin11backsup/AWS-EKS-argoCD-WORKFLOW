@@ -8,6 +8,8 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     # adding the shared-ingress-group to use it post app deployment
     alb.ingress.kubernetes.io/group.name: shared-ingress-group
+    alb.ingress.kubernetes.io/backend-protocol: "GRPC"
+
     #added this for the certification of the domain name
     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:124355660184:certificate/e046c3b9-5b24-481f-aa0d-b8f7cbd9e749
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80,"HTTPS":443}]'
