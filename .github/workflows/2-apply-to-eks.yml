@@ -300,6 +300,31 @@ jobs:
           echo "=========================================="
           sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------------------------------------
+      # 6b. Wait for ArgoCD Applications to sync
+      - name: Wait for ArgoCD Apps to sync
+        env:
+          ARGOCD_SERVER: argocd-server.argocd.svc.cluster.local
+          ARGOCD_USERNAME: admin
+          ARGOCD_PASSWORD: ${{ secrets.ARGOCD_ADMIN_PASSWORD }} # You should store this in GitHub Secrets
+        run: |
+          echo "=========================================="
+          echo "Waiting for ArgoCD Applications to sync..."
+          echo "=========================================="
+
+          # Log in to ArgoCD
+          argocd login $ARGOCD_SERVER --username $ARGOCD_USERNAME --password $ARGOCD_PASSWORD --insecure
+
+          # Wait for the main ArgoCD app
+          argocd app wait argocd --timeout 300
+
+          # Wait for your currencyconverter-production app
+          argocd app wait currencyconverter-production --timeout 300
+
+          echo "---> Correct: All ArgoCD applications are now synced"
+          echo "=========================================="
+          sleep 3
+#-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
       # 7. Get the ALB DNS Name for ArgoCD
