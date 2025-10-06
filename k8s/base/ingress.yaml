@@ -8,10 +8,8 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     # adding the shared-ingress-group to use it post app deployment
     alb.ingress.kubernetes.io/group.name: shared-ingress-group
-    #added this for the certification of the domain name
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:124355660184:certificate/e046c3b9-5b24-481f-aa0d-b8f7cbd9e749
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80,"HTTPS":443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+   
 spec:
   ingressClassName: alb
   rules:
@@ -37,8 +35,3 @@ spec:
                 name: currency-converter-service # Checked and verified,matching with service
                 port:
                   number: 80 # This must match the port defined in your Service
-  tls:
-    - hosts:
-        - argocd.trialphase.shop
-        - app.trialphase.shop
-      secretName: dummy-tls-secret-trail-1
