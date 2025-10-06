@@ -2,43 +2,14 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: shared-main-ingress
-  namespace: argocd
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    # adding the shared-ingress-group to use it post app deployment
     alb.ingress.kubernetes.io/group.name: shared-ingress-group
-    #added this for the certification of the domain name
     alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:124355660184:certificate/e046c3b9-5b24-481f-aa0d-b8f7cbd9e749
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80,"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
 spec:
   ingressClassName: alb
-  rules:
-    # Rule for ArgoCD Server
-    - host: argocd.trialphase.shop
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: argocd-server
-                port:
-                  number: 80
-    # Rule for the Currency Converter Application
-    - host: app.trialphase.shop
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: currency-converter-service # Checked and verified,matching with service
-                port:
-                  number: 80 # This must match the port defined in your Service
-  tls:
-    - hosts:
-        - argocd.trialphase.shop
-        - app.trialphase.shop
-      secretName: dummy-tls-secret-trail-1
+  rules: []   # overlay will populate rules per app
+  tls: []     # overlay will populate TLS hosts per app
