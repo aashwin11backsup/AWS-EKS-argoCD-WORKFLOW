@@ -35,24 +35,24 @@ jobs:
       - name: Verify AWS Authentication
         run: |
           echo "=========================================="
-          echo "✅ Verifying AWS Authentication"
+          echo "Verifying AWS Authentication"
           echo "=========================================="
           CALLER_IDENTITY=$(aws sts get-caller-identity)
           echo "Caller Identity: $CALLER_IDENTITY"
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "✅ Authenticated as Account: $ACCOUNT_ID"
+          echo "---> Correct: Authenticated as Account: $ACCOUNT_ID"
           echo "=========================================="
 
       # Step to install eksctl
       - name: Install eksctl
         run: |
           echo "=========================================="
-          echo "📦 Installing eksctl"
+          echo "Installing eksctl"
           echo "=========================================="
           curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
           sudo mv /tmp/eksctl /usr/local/bin
           EKSCTL_VERSION=$(eksctl version)
-          echo "✅ eksctl installed: $EKSCTL_VERSION"
+          echo "---> Correct: eksctl installed: $EKSCTL_VERSION"
           echo "=========================================="
           
 #-------------------------------------------------------------------------------------------------------------------------------
@@ -60,21 +60,21 @@ jobs:
       - name: Update Kubeconfig
         run: |
           echo "=========================================="
-          echo "🔌 Connecting to EKS Cluster"
+          echo "Connecting to EKS Cluster"
           echo "=========================================="
           echo "Region: ${{ github.event.inputs.aws_region }}"
           echo "Cluster: ${{ github.event.inputs.cluster_name }}"
           
           aws eks update-kubeconfig --region ${{ github.event.inputs.aws_region }} --name ${{ github.event.inputs.cluster_name }}
-          echo "✅ Kubeconfig updated"
+          echo "---> Correct: Kubeconfig updated"
           
           echo ""
-          echo "📊 Checking cluster nodes:"
+          echo "Checking cluster nodes:"
           kubectl get nodes -o wide
           
           NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
           echo ""
-          echo "✅ Found $NODE_COUNT node(s) in the cluster"
+          echo "---> Correct: Found $NODE_COUNT node(s) in the cluster"
           echo "=========================================="
           sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
@@ -85,7 +85,7 @@ jobs:
         id: ensure_policy
         run: |
           echo "=========================================="
-          echo "📋 Ensuring IAM Policy for ALB Controller"
+          echo "Ensuring IAM Policy for ALB Controller"
           echo "=========================================="
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -96,20 +96,20 @@ jobs:
           EXISTING_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
 
           if [ -n "$EXISTING_POLICY_ARN" ]; then
-            echo "✅ Policy already exists: $EXISTING_POLICY_ARN"
+            echo "---> Correct: Policy already exists: $EXISTING_POLICY_ARN"
             POLICY_ARN=$EXISTING_POLICY_ARN
           else
-            echo "⚠️  Policy not found. Creating new policy..."
+            echo "ALERT---> Policy not found. Creating new policy..."
             curl -sSfL -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
             echo "Downloaded policy document"
             
             POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://iam-policy.json --query 'Policy.Arn' --output text)
-            echo "✅ Created policy: $POLICY_ARN"
+            echo "---> Correct: Created policy: $POLICY_ARN"
           fi
           
           echo "policy_arn=$POLICY_ARN" >> "$GITHUB_OUTPUT"
           echo ""
-          echo "✅ Final Policy ARN: $POLICY_ARN"
+          echo "---> Correct: Final Policy ARN: $POLICY_ARN"
           echo "=========================================="
 #-------------------------------------------------------------------------------------------------------------------------------
 
@@ -118,7 +118,7 @@ jobs:
       - name: Associate IAM OIDC Provider
         run: |
           echo "=========================================="
-          echo "🔗 Associating OIDC Provider with Cluster"
+          echo "Associating OIDC Provider with Cluster"
           echo "=========================================="
           
           eksctl utils associate-iam-oidc-provider \
@@ -126,19 +126,19 @@ jobs:
             --region=${{ github.event.inputs.aws_region }} \
             --approve
           
-          echo "✅ OIDC Provider associated"
+          echo "---> Correct: OIDC Provider associated"
           echo "=========================================="
           sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------------------------------------------
-        # 3b. Create IAM Service Account for ALB Controller (IRSA)
+           # 3b. Create IAM Service Account for ALB Controller (IRSA)
       - name: Create IAM Service Account for ALB Controller
         env:
           POLICY_ARN: ${{ steps.ensure_policy.outputs.policy_arn }}
         run: |
           echo "=========================================="
-          echo "🔑 Creating IRSA for ALB Controller"
+          echo "Creating IRSA for ALB Controller"
           echo "=========================================="
           echo "Cluster: ${{ github.event.inputs.cluster_name }}"
           echo "Region: ${{ github.event.inputs.aws_region }}"
@@ -148,21 +148,21 @@ jobs:
           echo "IAM Role Name: $ROLE_NAME"
           
           echo ""
-          echo "🧹 Cleaning up any existing IRSA resources..."
+          echo "Cleaning up any existing IRSA resources..."
           
           # Delete using eksctl (this removes the CloudFormation stack)
           eksctl delete iamserviceaccount \
             --cluster=${{ github.event.inputs.cluster_name }} \
             --namespace=kube-system \
             --name=aws-load-balancer-controller \
-            --region=${{ github.event.inputs.aws_region }} || echo "⚠️  No existing service account to delete (this is OK)"
+            --region=${{ github.event.inputs.aws_region }} || echo "ALERT---> No existing service account to delete (this is OK)"
           
           echo ""
-          echo "⏳ Waiting 10 seconds for cleanup to complete..."
+          echo "Waiting 10 seconds for cleanup to complete..."
           sleep 10
           
           echo ""
-          echo "🆕 Creating fresh IRSA resources..."
+          echo "Creating fresh IRSA resources..."
           eksctl create iamserviceaccount \
             --cluster=${{ github.event.inputs.cluster_name }} \
             --namespace=kube-system \
@@ -173,18 +173,18 @@ jobs:
             --region=${{ github.event.inputs.aws_region }}
           
           echo ""
-          echo "✅ IAM Role and Service Account created"
+          echo "---> Correct: IAM Role and Service Account created"
           echo ""
-          echo "📋 Verifying Service Account:"
+          echo "Verifying Service Account:"
           kubectl get sa aws-load-balancer-controller -n kube-system -o yaml
           
           echo ""
-          echo "🔍 Checking annotation:"
+          echo "Checking annotation:"
           ROLE_ARN=$(kubectl get sa aws-load-balancer-controller -n kube-system -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}')
           if [ -n "$ROLE_ARN" ]; then
-            echo "✅ Service Account has role annotation: $ROLE_ARN"
+            echo "---> Correct: Service Account has role annotation: $ROLE_ARN"
           else
-            echo "❌ ERROR: Service Account missing role annotation!"
+            echo "XXXX---> ERROR: Service Account missing role annotation!"
             exit 1
           fi
           echo "=========================================="
@@ -196,7 +196,7 @@ jobs:
       - name: Install AWS Load Balancer Controller
         run: |
           echo "=========================================="
-          echo "🚀 Installing AWS Load Balancer Controller"
+          echo "Installing AWS Load Balancer Controller"
           echo "=========================================="
           
           VPC_ID=$(aws eks describe-cluster --name ${{ github.event.inputs.cluster_name }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
@@ -218,27 +218,27 @@ jobs:
             --set region=${{ github.event.inputs.aws_region }}
 
           echo ""
-          echo "⏳ Waiting 60 seconds for controller to deploy..."
+          echo "Waiting 30 seconds for controller to deploy..."
           sleep 30
           
           echo ""
-          echo "📊 Checking deployment status:"
+          echo "Checking deployment status:"
           kubectl get deployment aws-load-balancer-controller -n kube-system
           
           echo ""
-          echo "📦 Checking pods:"
+          echo "Checking pods:"
           kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
           
           POD_STATUS=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
           echo ""
           if [ "$POD_STATUS" == "Running" ]; then
-            echo "✅ ALB Controller pod is Running"
+            echo "---> Correct: ALB Controller pod is Running"
           else
-            echo "⚠️  ALB Controller pod status: $POD_STATUS"
+            echo "ALERT---> ALB Controller pod status: $POD_STATUS"
           fi
           
           echo ""
-          echo "📝 Recent controller logs:"
+          echo "Recent controller logs:"
           kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=30 || true
           echo "=========================================="
           sleep 3
@@ -249,7 +249,7 @@ jobs:
       - name: Install ArgoCD
         run: |
           echo "=========================================="
-          echo "🐙 Installing ArgoCD"
+          echo "Installing ArgoCD"
           echo "=========================================="
           
           helm repo add argo https://argoproj.github.io/argo-helm
@@ -262,17 +262,17 @@ jobs:
             --set server.extraArgs={--insecure}
           
           echo ""
-          echo "⏳ Waiting 30 seconds for ArgoCD pods to start..."
+          echo "Waiting 30 seconds for ArgoCD pods to start..."
           sleep 30
           
           echo ""
-          echo "📦 Checking ArgoCD pods:"
+          echo "Checking ArgoCD pods:"
           kubectl get pods -n argocd -o wide
           
           READY_PODS=$(kubectl get pods -n argocd --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l || echo "0")
           TOTAL_PODS=$(kubectl get pods -n argocd --no-headers 2>/dev/null | wc -l || echo "0")
           echo ""
-          echo "✅ $READY_PODS/$TOTAL_PODS pods are Running"
+          echo "---> Correct: $READY_PODS/$TOTAL_PODS pods are Running"
           echo "=========================================="
           sleep 3
 #-------------------------------------------------------------------------------------------------------------------------------
@@ -282,19 +282,19 @@ jobs:
       - name: Expose ArgoCD Server
         run: |
           echo "=========================================="
-          echo "🌐 Creating Ingress for ArgoCD"
+          echo "Creating Ingress for ArgoCD"
           echo "=========================================="
           
           echo "Waiting for ArgoCD server to be ready..."
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=300s
-          echo "✅ ArgoCD server is ready"
+          echo "---> Correct: ArgoCD server is ready"
           
           echo ""
           echo "Applying Ingress manifest from argocd/ directory..."
           kubectl apply -f argocd/
           
           echo ""
-          echo "📋 Checking Ingress resource:"
+          echo "Checking Ingress resource:"
           kubectl get ingress -n argocd
           echo "=========================================="
           sleep 3
@@ -305,15 +305,15 @@ jobs:
       - name: Get Ingress URL
         run: |
           echo "=========================================="
-          echo "⏳ Waiting for ALB to be provisioned..."
+          echo "Waiting for ALB to be provisioned..."
           echo "=========================================="
           echo "This may take 2-3 minutes..."
           echo ""
           
-          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=60s || echo "⚠️  Timeout reached, checking status..."
+          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=60s || echo "ALERT---> Timeout reached, checking status..."
 
           echo ""
-          echo "📋 Ingress Details:"
+          echo "Ingress Details:"
           kubectl describe ingress shared-main-ingress -n argocd || true
           
           echo ""
@@ -321,17 +321,17 @@ jobs:
           ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
           
           if [ -n "$ALB_HOSTNAME" ]; then
-            echo "✅ ArgoCD URL is ready:"
-            echo "   http://$ALB_HOSTNAME"
+            echo "---> Correct: ALB DNS  URL is ready:"
+            echo " --> $ALB_HOSTNAME"
           else
-            echo "⚠️  ALB not ready yet. Check again in a few minutes with:"
+            echo "ALERT---> ALB not ready yet. Check again in a few minutes with:"
             echo "   kubectl get ingress shared-main-ingress -n argocd"
           fi
           echo "=========================================="
 
           echo ""
           echo "=========================================="
-          echo "🔑 ArgoCD Login Credentials"
+          echo "ArgoCD Login Credentials"
           echo "=========================================="
           echo "Username: admin"
           echo -n "Password: "
