@@ -1,3 +1,4 @@
+# k8s/overlays/production/kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -5,24 +6,44 @@ resources:
 - ../../base
 
 patches:
-- patch: |-
-    - op: replace
-      path: /spec/rules/0/host
-      value: argocd.trialphase.shop
-    - op: replace
-      path: /spec/rules/1/host
-      value: app.trialphase.shop
-    - op: replace
-      path: /spec/tls/0/hosts/0
-      value: argocd.trialphase.shop
-    - op: replace
-      path: /spec/tls/0/hosts/1
-      value: app.trialphase.shop
-  target:
-    kind: Ingress
-    name: shared-main-ingress 
+# This entire inline patch for the Ingress can be removed.
+# - patch: |-
+#     - op: replace
+#       path: /spec/rules/0/host
+#       value: argocd.trialphase.shop
+#     ...
+#   target:
+#     kind: Ingress
+#     name: shared-main-ingress 
 
 - path: deployment-patch.yaml
   target:
     kind: Deployment
-    name: currency-converter 
+    name: currency-converter
+
+
+
+# Old Ingress-patch.json:
+
+# [
+#   {
+#     "op": "replace",
+#     "path": "/spec/rules/0/host",
+#     "value": "argocd.trialphase.shop"
+#   },
+#   {
+#     "op": "replace",
+#     "path": "/spec/rules/1/host",
+#     "value": "app.trialphase.shop"
+#   },
+#   {
+#     "op": "replace",
+#     "path": "/spec/tls/0/hosts/0",
+#     "value": "argocd.trialphase.shop"
+#   },
+#   {
+#     "op": "replace",
+#     "path": "/spec/tls/0/hosts/1",
+#     "value": "app.trialphase.shop"
+#   }
+# ]
