@@ -150,6 +150,7 @@ jobs:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
+
       - name: Sync Argo CD Application
         run: |
           echo "--> Triggering Argo CD sync for application: ${{ env.ARGOCD_APP_NAME }}"
