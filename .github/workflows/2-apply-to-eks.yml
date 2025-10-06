@@ -170,7 +170,8 @@ jobs:
             --role-name "$ROLE_NAME" \
             --attach-policy-arn=$POLICY_ARN \
             --approve \
-            --region=${{ github.event.inputs.aws_region }}
+            --region=${{ github.event.inputs.aws_region }} \
+            --override-existing-serviceaccounts
           
           echo ""
           echo "---> Correct: IAM Role and Service Account created"
