@@ -144,7 +144,7 @@ jobs:
       - name: Login to Argo CD
         run: |
           echo "--> Logging into Argo CD server..."
-          argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure
+          argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure --grpc-web
           echo "--> Argo CD login successful."
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
