@@ -156,7 +156,7 @@ jobs:
           echo "✅ Successfully logged in to ArgoCD."
         env:
           ARGOCD_SERVER: argocd.trialphase.shop
-          ARGOCD_ADMIN_PASSWORD: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
 
 
