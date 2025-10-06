@@ -136,22 +136,18 @@ jobs:
 
       - name: Install Argo CD CLI
         run: |
-          echo "--> Installing Argo CD CLI..."
           curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
-          echo "--> Argo CD CLI installed."
 
       - name: Login to Argo CD
         run: |
-          echo "--> Logging into Argo CD server..."
-          argocd login ${{ secrets.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_AUTH_TOKEN }} --insecure --grpc-web
-          echo "--> Argo CD login successful."
+          argocd login $ARGOCD_SERVER --username admin --password $ARGOCD_AUTH_TOKEN
         env:
           ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
           ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
 
       - name: Sync Argo CD Application
         run: |
-          echo "--> Triggering Argo CD sync for application: ${{ env.ARGOCD_APP_NAME }}"
-          argocd app sync ${{ env.ARGOCD_APP_NAME }}
-          echo "-->  Argo CD sync triggered successfully!"
+          argocd app sync $ARGOCD_APP_NAME
+        env:
+          ARGOCD_APP_NAME: currencyconverter-production
