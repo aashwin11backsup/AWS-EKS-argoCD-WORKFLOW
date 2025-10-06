@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+namespace: default
+
+patches:
+- path: deployment-patch.yaml   # patch for env to production
+- patch: |-
+    - op: add
+      path: /spec/rules
+      value:
+        - host: app.trialphase.shop
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: currency-converter-service
+                    port:
+                      number: 80
+    - op: add
+      path: /spec/tls
+      value:
+        - hosts:
+            - app.trialphase.shop
+          secretName: dummy-tls-secret-trail-1
+  target:
+    kind: Ingress
+    name: shared-main-ingress
