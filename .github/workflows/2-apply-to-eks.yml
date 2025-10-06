@@ -261,7 +261,9 @@ jobs:
             --namespace argocd \
             --create-namespace \
             --set server.service.type=ClusterIP \
-            --set server.extraArgs={--insecure,--disable-auth-ui-redirect}
+            --set server.extraArgs='{--insecure,--disable-auth-ui-redirect}'
+
+
           
           echo ""
           echo "Waiting 30 seconds for ArgoCD pods to start..."
