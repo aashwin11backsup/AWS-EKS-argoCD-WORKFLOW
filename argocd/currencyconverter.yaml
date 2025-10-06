@@ -10,12 +10,11 @@ spec:
   source:
     repoURL: 'https://github.com/aashwin11backsup/AWS-EKS-argoCD-WORKFLOW.git'
     targetRevision: https-check
-    # Pointing to the production overlay
-    path: k8s/overlays/production
+
+    path: k8s/overlays/development
   destination:
     server: 'https://kubernetes.default.svc'
-    # Change this to the 'default' namespace
-    namespace: default
+    namespace: argocd
   syncPolicy:
     automated:
       selfHeal: true
