@@ -2,20 +2,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: default # <-- CHANGE THIS
+namespace: default
 
 resources:
 - ../../base
 
 patches:
-# ... your patches remain the same
 - patch: |-
     - op: replace
-      path: /spec/rules/0/host
-      value: argocd.trialphase.shop
-    - op: replace
-      path: /spec/rules/1/host
-      value: app.trialphase.shop
+      path: /spec/rules/0/host      # The only rule is at index 0
+      value: app.trialphase.shop # Set the correct hostname
   target:
     kind: Ingress
     name: app-main-ingress
