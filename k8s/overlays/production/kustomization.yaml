@@ -1,12 +1,14 @@
+# k8s/overlays/production/kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: argocd
+namespace: default # <-- CHANGE THIS
 
 resources:
 - ../../base
 
 patches:
+# ... your patches remain the same
 - patch: |-
     - op: replace
       path: /spec/rules/0/host
@@ -14,12 +16,11 @@ patches:
     - op: replace
       path: /spec/rules/1/host
       value: app.trialphase.shop
-
   target:
     kind: Ingress
-    name: shared-main-ingress 
+    name: app-main-ingress
 
 - path: deployment-patch.yaml
   target:
     kind: Deployment
-    name: currency-converter 
+    name: currency-converter

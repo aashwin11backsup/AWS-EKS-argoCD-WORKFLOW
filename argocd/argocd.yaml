@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: 'https://github.com/aashwin11backsup/AWS-EKS-argoCD-WORKFLOW.git'
-    targetRevision: https-check
+    targetRevision: namespace
     path: argocd
   destination:
     server: 'https://kubernetes.default.svc'
