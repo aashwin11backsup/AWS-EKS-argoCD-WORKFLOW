@@ -1,6 +1,5 @@
 name: '4-Build, Test, and Push Application'
 
-
 on:
   # This workflow is now triggered manually from the Actions tab
   workflow_dispatch:
@@ -57,6 +56,9 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        # We need to check out the specific branch to get the correct commit SHA
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Get short Git commit SHA
         id: short-sha
@@ -104,6 +106,8 @@ jobs:
         with:
           # A personal access token is required to push the commit back to the repo
           token: ${{ secrets.GH_PAT }}
+          # Check out the specific branch to push changes to it
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Configure Git
         run: |
@@ -113,11 +117,13 @@ jobs:
 
       - name: Update Kubernetes Deployment File
         run: |
+          BRANCH_NAME=${{ github.event.inputs.branch }}
           IMAGE_TAG=${{ needs.build-and-push.outputs.sha }}
           echo "--> New image tag is: $IMAGE_TAG"
+          echo "--> Operating on branch: $BRANCH_NAME"
           
-          echo "--> Pulling latest changes from https-check branch..."
-          git pull origin https-check
+          echo "--> Pulling latest changes from $BRANCH_NAME branch..."
+          git pull origin $BRANCH_NAME
           
           echo "--> Updating image in deployment file: ${{ env.DEPLOYMENT_FILE }}"
           # Use sed to replace the image tag in the deployment file
@@ -130,7 +136,7 @@ jobs:
             echo "--> No changes to commit. Manifest is already up to date."
           else
             git commit -m "Update image version to $IMAGE_TAG"
-            git push origin https-check
+            git push origin $BRANCH_NAME
             echo "--> Pushed updated manifest to repository."
           fi
 
@@ -157,8 +163,6 @@ jobs:
       #   env:
       #     ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
       #     ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-
-
 
       # - name: Sync Argo CD Application
       #   run: |
