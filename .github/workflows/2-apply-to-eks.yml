@@ -312,22 +312,22 @@ jobs:
           echo "This may take 2-3 minutes..."
           echo ""
           
-          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=240s || echo "ALERT---> Timeout reached, checking status..."
+          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/argocd-server-ingress -n argocd --timeout=240s || echo "ALERT---> Timeout reached, checking status..."
 
           echo ""
           echo "Ingress Details:"
-          kubectl describe ingress shared-main-ingress -n argocd || true
+          kubectl describe ingress --all-namespaces || true
           
           echo ""
           echo "=========================================="
-          ALB_HOSTNAME=$(kubectl get ingress shared-main-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          ALB_HOSTNAME=$(kubectl get ingress argocd-server-ingress -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
           
           if [ -n "$ALB_HOSTNAME" ]; then
             echo "---> Correct: ALB DNS  URL is ready:"
             echo " --> $ALB_HOSTNAME"
           else
             echo "ALERT---> ALB not ready yet. Check again in a few minutes with:"
-            echo "   kubectl get ingress shared-main-ingress -n argocd"
+            echo "   kubectl get ingress --all-namespaces"
           fi
           echo "=========================================="
 
