@@ -312,7 +312,7 @@ jobs:
           echo "This may take 2-3 minutes..."
           echo ""
           
-          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=60s || echo "ALERT---> Timeout reached, checking status..."
+          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' ingress/shared-main-ingress -n argocd --timeout=240s || echo "ALERT---> Timeout reached, checking status..."
 
           echo ""
           echo "Ingress Details:"
