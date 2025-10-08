@@ -79,11 +79,11 @@ jobs:
           echo "Deleting ArgoCD Application resources..."
           kubectl delete app --all -n argocd --wait=false --ignore-not-found=true
           
-          echo "Explicitly deleting Ingress resources to trigger ALB cleanup..."
-          kubectl delete ingress --all -n argocd --ignore-not-found=true
-          kubectl delete ingress --all -n default --ignore-not-found=true
+          # echo "Explicitly deleting Ingress resources to trigger ALB cleanup..."
+          # kubectl delete ingress --all -n argocd --ignore-not-found=true
+          # kubectl delete ingress --all -n default --ignore-not-found=true
           
-          echo "Waiting 45 seconds for controllers to process deletions..."
+          # echo "Waiting 45 seconds for controllers to process deletions..."
           sleep 45
 
 #-------------------------------------------------------------------------------------------------------------------------------
